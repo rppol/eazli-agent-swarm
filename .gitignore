@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Built artifacts — both indexes are rebuilt from committed source data
+# (kb/raw/, catalog/raw/) so the vector store itself is not tracked.
+data/chroma/
+
+# Local scratch
+*.log
+.DS_Store

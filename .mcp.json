@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "eazli-tools": {
+      "command": "uv",
+      "args": ["run", "python", "mcp_server.py"],
+      "env": {
+        "EAZLI_API": "http://127.0.0.1:8000"
+      }
+    }
+  }
+}

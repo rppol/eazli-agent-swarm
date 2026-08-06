@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      # Both indexes are built from committed source data, so CI reproduces
+      # them from scratch rather than trusting a checked-in vector store.
+      - name: Build indexes
+        run: |
+          PYTHONPATH=. uv run python ingest/build_kb.py
+          PYTHONPATH=. uv run python ingest/build_catalog.py
+
+      - name: Unit and integration tests
+        run: uv run pytest -q
+
+      # The ground-truth evals are the real gate. They exercise geometry,
+      # catalogue provenance and plan limits with no model in the loop, so a
+      # failure here is a factual regression, not a flaky judgement call.
+      - name: Ground-truth evals
+        run: PYTHONPATH=. uv run python evals/run_evals.py

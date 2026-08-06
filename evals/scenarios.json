@@ -1,0 +1,186 @@
+{
+  "description": "Ground-truth evaluation set for the eazli swarm's factual layer. Every expectation here is decidable without a language model: it is either geometry, catalogue provenance, or a published eazli plan limit. These run in CI and must never regress.",
+  "why_deterministic": "LLM-as-judge is the right tool for grading whether an explanation was useful or honest. It is the wrong tool for grading whether a 218cm sofa fits through an 89cm passage. Splitting the two means the judge is never asked to arbitrate something arithmetic, and a regression in the arithmetic fails loudly instead of being averaged away in a rubric score.",
+
+  "scenarios": [
+    {
+      "id": "sofa-reaches-living-not-bedroom",
+      "intent": "The access route depends on the destination room. Scoring every delivery against the worst-case route produces false rejections; scoring against the best case produces false confidence.",
+      "kind": "access",
+      "unit": "unit01",
+      "item": {"w": 218, "d": 95, "h": 84},
+      "expect": [
+        {"room": "living_dining", "status": "pass"},
+        {"room": "bedroom", "status": "fail", "reason_contains": "room door"}
+      ]
+    },
+    {
+      "id": "oversized-sectional-blocked-at-lift-and-turn",
+      "intent": "A 3m sectional fails two independent legs. Both must be reported, not just the first, so the user learns the item is hopeless rather than fixable.",
+      "kind": "access",
+      "unit": "unit01",
+      "item": {"w": 300, "d": 95, "h": 84},
+      "expect": [
+        {"room": "living_dining", "status": "fail", "reason_contains": "lift"},
+        {"room": "living_dining", "status": "fail", "reason_contains": "turn"}
+      ]
+    },
+    {
+      "id": "missing-dimensions-never-pass",
+      "intent": "The single most important behaviour in the system. An unknown size must never be reported as fitting.",
+      "kind": "access",
+      "unit": "unit01",
+      "item": {"w": null, "d": null, "h": null, "confidence": "missing"},
+      "expect": [
+        {"room": "living_dining", "status": "unverified"},
+        {"room": "bedroom", "status": "unverified"}
+      ]
+    },
+    {
+      "id": "flat-pack-carton-beats-assembled-envelope",
+      "intent": "Judging a flat-packed item on its assembled size rejects deliveries that would arrive fine. Judging a rigid item on a carton size it does not have would do the opposite.",
+      "kind": "access_carton",
+      "unit": "unit01",
+      "room": "bedroom",
+      "item": {"w": 90, "d": 90, "h": 105},
+      "carton": {"w": 95, "d": 88, "h": 40},
+      "expect_assembled": "fail",
+      "expect_carton": "pass"
+    },
+    {
+      "id": "oversized-sofa-fails-room-fit",
+      "intent": "Room fit and access are separate checks. This one fails in the room, not on the route.",
+      "kind": "fit",
+      "unit": "unit01",
+      "room": "living_dining",
+      "item": {"id": "sofa", "w": 400, "d": 95, "h": 84},
+      "x": 0,
+      "y": 300,
+      "expect_status": "fail",
+      "reason_contains": "bounds"
+    },
+    {
+      "id": "sofa-jammed-against-far-wall-fails-walkway",
+      "intent": "An item can be inside the room and still unusable. The 90cm walkway rule is what makes the difference.",
+      "kind": "fit",
+      "unit": "unit01",
+      "room": "living_dining",
+      "item": {"id": "sofa", "w": 185, "d": 88, "h": 80},
+      "x": 40,
+      "y": 440,
+      "expect_status": "fail",
+      "reason_contains": "walkway"
+    },
+    {
+      "id": "sensible-sofa-placement-passes",
+      "intent": "A negative-only suite proves nothing. The system must also say yes when the answer is yes.",
+      "kind": "fit",
+      "unit": "unit01",
+      "room": "living_dining",
+      "item": {"id": "sofa", "w": 185, "d": 88, "h": 80},
+      "x": 120,
+      "y": 300,
+      "expect_status": "pass"
+    },
+    {
+      "id": "explorer-blocks-sixth-layout",
+      "intent": "eazli publishes 5 layout options on Explorer and 15 on Active. The quota is a product constraint, not a suggestion.",
+      "kind": "quota",
+      "plan": "explorer",
+      "layouts_used": 5,
+      "expect_layouts_allowed": false
+    },
+    {
+      "id": "active-allows-sixth-layout",
+      "kind": "quota",
+      "plan": "active",
+      "layouts_used": 5,
+      "expect_layouts_allowed": true
+    },
+    {
+      "id": "explorer-is-single-room",
+      "intent": "Explorer covers one room. A multi-room request must be caught at intake, not after the work is done.",
+      "kind": "quota",
+      "plan": "explorer",
+      "rooms_used": 2,
+      "expect_rooms_allowed": false
+    },
+    {
+      "id": "coffee-machines-are-not-recommendable",
+      "intent": "amazon.sa returns Philips coffee machines for 'coffee table'. They are in the index so an agent can find and dismiss them, but they must never be eligible as a confirmed recommendation.",
+      "kind": "catalog",
+      "asins": ["B0DZ5QLZK7", "B0DDJF8JDR", "B0BSNFDQ9Q"],
+      "expect_usable": false,
+      "expect_flag": "category_mismatch"
+    },
+    {
+      "id": "self-contradicting-wardrobes-are-flagged",
+      "intent": "Three Woodies listings state 44x91x180 in the labelled field and 77.5x49.5x175.5 in the bare field. Picking either silently would be indefensible.",
+      "kind": "catalog",
+      "asins": ["B0DYDPQ1LH", "B0DYDNS6FQ", "B0DYDPYCFV"],
+      "expect_usable": false,
+      "expect_flag": "dimension_conflict"
+    },
+    {
+      "id": "impossible-armchair-is-flagged",
+      "intent": "A wingback armchair listed at 30cm wide does not exist. Plausibility bounds catch listing errors that unit conversion cannot.",
+      "kind": "catalog",
+      "asins": ["B0GCD334HF"],
+      "expect_usable": false,
+      "expect_flag": "implausible_for_category"
+    },
+    {
+      "id": "clean-sofa-listing-is-usable",
+      "intent": "The rejection machinery must not reject everything.",
+      "kind": "catalog",
+      "asins": ["B0FR3WVLTS", "B0DT1F25XV"],
+      "expect_usable": true
+    },
+    {
+      "id": "layout-with-bare-skus-is-unverified-not-passed",
+      "intent": "Regression. Rules were selected by substring-matching item_id, so real product ASINs matched nothing and the seating and sofa-to-table rules silently did not run — returning a clean pass on a layout with a 13cm sofa-table gap. A rule that did not run has not been passed. Found by the sourcing agent while using the system, not by a test.",
+      "kind": "layout",
+      "unit": "unit01",
+      "room": "living_dining",
+      "placements": [
+        {"id": "B0FR3WVLTS", "w": 185, "d": 88, "h": 80, "x": 40, "y": 300},
+        {"id": "B0H8PQ9KDJ", "w": 80, "d": 80, "h": 30, "x": 40, "y": 395}
+      ],
+      "expect_status": "unverified"
+    },
+    {
+      "id": "layout-with-declared-roles-catches-the-gap",
+      "intent": "The same two products, with roles declared, must fail on the 40cm sofa-to-coffee-table rule.",
+      "kind": "layout",
+      "unit": "unit01",
+      "room": "living_dining",
+      "placements": [
+        {"id": "B0FR3WVLTS", "w": 185, "d": 88, "h": 80, "x": 40, "y": 300, "role": "sofa"},
+        {"id": "B0H8PQ9KDJ", "w": 80, "d": 80, "h": 30, "x": 40, "y": 395, "role": "coffee_table"}
+      ],
+      "expect_status": "fail",
+      "reason_contains": "between"
+    },
+    {
+      "id": "kb-answers-the-agent-scope-question",
+      "intent": "Adam's boundary is published policy. If retrieval cannot surface it, the auditor cannot enforce it.",
+      "kind": "retrieval",
+      "query": "is Adam allowed to design rooms or create visuals",
+      "expect_text_contains": "does not design rooms"
+    },
+    {
+      "id": "kb-answers-the-fitment-liability-question",
+      "intent": "The Fitment clause is the justification for the whole access-path feature.",
+      "kind": "retrieval",
+      "query": "who is responsible for verifying doorway and elevator measurements",
+      "expect_text_contains": "doorways, hallways, stairs"
+    },
+    {
+      "id": "our-analysis-is-never-attributed-to-eazli",
+      "intent": "This project's own commentary is indexed alongside eazli's text. An agent citing it as eazli's published position would be inventing a source.",
+      "kind": "provenance",
+      "query": "the access path gap and what eazli disclaims",
+      "forbid_source_for_doc_type": {"doc_type": "analysis", "must_not_contain": "eazli.com"}
+    }
+  ]
+}

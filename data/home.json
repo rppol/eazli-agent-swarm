@@ -1,0 +1,92 @@
+{
+  "source": "floor_plan.webp — 'Typical Odd Floor Plan, 9th & 33rd'",
+  "captured": "2026-08-06",
+  "units_cm": true,
+  "note": "Room dimensions are read off the plan and converted from feet-inches at 30.48 cm/ft. The plan itself states 'Some dimensions have been rounded up to 2 inches.' Anything the plan does not dimension is marked confidence 'assumed' and must be measured on site before it is trusted — the same rule applied to product dimensions.",
+
+  "building": {
+    "lifts": [
+      {"name": "passenger lift A", "imperial": "7'2\" x 6'10\"", "width_cm": 218, "depth_cm": 208, "height_cm": 220, "confidence": "assumed_height"},
+      {"name": "passenger lift B", "imperial": "7'2\" x 8'10\"", "width_cm": 218, "depth_cm": 269, "height_cm": 220, "confidence": "assumed_height"},
+      {"name": "fire lift", "imperial": "7'6\" x 7'2\"", "width_cm": 229, "depth_cm": 218, "height_cm": 220, "confidence": "assumed_height"}
+    ],
+    "common_passage": {"imperial": "1.50M WIDE PASSAGE", "width_cm": 150, "height_cm": 240, "confidence": "stated_width_assumed_height"},
+    "fire_lobby": {"imperial": "14'9\" x 4'11\"", "width_cm": 450, "depth_cm": 150},
+    "has_stairs": true
+  },
+
+  "defaults": {
+    "ceiling_height_cm": 290,
+    "ceiling_confidence": "assumed",
+    "main_door_width_cm": 90,
+    "internal_door_width_cm": 75,
+    "door_confidence": "assumed",
+    "door_height_cm": 210
+  },
+
+  "units": [
+    {
+      "id": "unit01",
+      "label": "Flat 01 — 2BHK",
+      "config": "2BHK",
+      "internal_passage": {"imperial": "2'11\"", "width_cm": 89, "confidence": "stated"},
+      "rooms": [
+        {"name": "living_dining", "imperial": "11' x 18'1\"", "width_cm": 335, "depth_cm": 551, "height_cm": 290},
+        {"name": "kitchen",       "imperial": "11' x 8'1\"",  "width_cm": 335, "depth_cm": 246, "height_cm": 290},
+        {"name": "bedroom",       "imperial": "11' x 10'",    "width_cm": 335, "depth_cm": 305, "height_cm": 290},
+        {"name": "master_bedroom","imperial": "14'5\" x 9'11\"","width_cm": 439, "depth_cm": 302, "height_cm": 290},
+        {"name": "common_toilet", "imperial": "7'7\" x 4'6\"", "width_cm": 231, "depth_cm": 137, "height_cm": 290},
+        {"name": "master_toilet", "imperial": "4'6\" x 7'",    "width_cm": 137, "depth_cm": 213, "height_cm": 290}
+      ]
+    },
+    {
+      "id": "unit04",
+      "label": "Flat 04 — 3BHK",
+      "config": "3BHK",
+      "internal_passage": {"imperial": "2'11\"", "width_cm": 89, "confidence": "stated"},
+      "rooms": [
+        {"name": "living_dining",   "imperial": "20' x 11'",   "width_cm": 610, "depth_cm": 335, "height_cm": 290},
+        {"name": "kitchen",         "imperial": "12' x 8'",    "width_cm": 366, "depth_cm": 244, "height_cm": 290},
+        {"name": "master_bedroom_1","imperial": "14' x 10'",   "width_cm": 427, "depth_cm": 305, "height_cm": 290},
+        {"name": "master_bedroom_2","imperial": "10' x 12'",   "width_cm": 305, "depth_cm": 366, "height_cm": 290},
+        {"name": "bedroom",         "imperial": "12' x 10'",   "width_cm": 366, "depth_cm": 305, "height_cm": 290},
+        {"name": "master_toilet_1", "imperial": "8' x 6'",     "width_cm": 244, "depth_cm": 183, "height_cm": 290},
+        {"name": "master_toilet_2", "imperial": "7'1\" x 5'",  "width_cm": 216, "depth_cm": 152, "height_cm": 290},
+        {"name": "common_toilet",   "imperial": "7' x 4'",     "width_cm": 213, "depth_cm": 122, "height_cm": 290}
+      ]
+    },
+    {
+      "id": "unit05",
+      "label": "Flat 05 — 2BHK",
+      "config": "2BHK",
+      "internal_passage": {"imperial": "2'11\"", "width_cm": 89, "confidence": "stated"},
+      "rooms": [
+        {"name": "living_dining",  "imperial": "20' x 11'",   "width_cm": 610, "depth_cm": 335, "height_cm": 290},
+        {"name": "kitchen",        "imperial": "11' x 8'",    "width_cm": 335, "depth_cm": 244, "height_cm": 290},
+        {"name": "master_bedroom", "imperial": "14' x 10'",   "width_cm": 427, "depth_cm": 305, "height_cm": 290},
+        {"name": "bedroom",        "imperial": "11' x 10'",   "width_cm": 335, "depth_cm": 305, "height_cm": 290},
+        {"name": "common_toilet",  "imperial": "4'6\" x 7'1\"","width_cm": 137, "depth_cm": 216, "height_cm": 290},
+        {"name": "master_toilet",  "imperial": "4'6\" x 7'",  "width_cm": 137, "depth_cm": 213, "height_cm": 290}
+      ]
+    }
+  ],
+
+  "delivery_route": {
+    "description": "The route eazli's Fitment clause makes the customer responsible for verifying. Split into the shared leg every delivery crosses and a final leg that depends on the destination room, because scoring a living-room sofa against a bedroom door produces false rejections.",
+    "to_flat_door": [
+      {"name": "passenger lift A", "kind": "lift",     "width_cm": 218, "height_cm": 220, "depth_cm": 208},
+      {"name": "lift lobby",       "kind": "corridor", "width_cm": 150, "height_cm": 240},
+      {"name": "common passage",   "kind": "corridor", "width_cm": 150, "height_cm": 240},
+      {"name": "turn into flat",   "kind": "turn",     "width_cm": 150, "height_cm": 240, "turn_into_cm": 89},
+      {"name": "flat entrance",    "kind": "door",     "width_cm": 90,  "height_cm": 210}
+    ],
+    "open_plan_rooms": ["living_dining"],
+    "within_flat": {
+      "open_plan": [],
+      "behind_a_door": [
+        {"name": "2'11\" internal passage", "kind": "corridor", "width_cm": 89, "height_cm": 270},
+        {"name": "room door", "kind": "door", "width_cm": 75, "height_cm": 210}
+      ]
+    }
+  }
+}
