@@ -227,3 +227,88 @@ def test_missing_dimensions_makes_the_whole_route_unverified():
 def test_full_real_route_passes_for_a_sensibly_sized_sofa():
     verdict = check_access_path(SMALL_SOFA, [LIFT, COMMON_CORRIDOR, FLAT_DOOR, INNER_PASSAGE])
     assert verdict.status == "pass"
+
+
+# --------------------------------------------------------------------------
+# Regressions from the adversarial audit and code review.
+# Every one of these returned a confident `pass` before the fix.
+# --------------------------------------------------------------------------
+
+def test_walkway_is_measured_to_other_furniture_not_only_to_walls():
+    """Two sofas 3cm apart used to pass: _front_gap only looked at the wall."""
+    a = Placement("sofaA", Dims(w=200, d=90, h=80), x=0, y=0, facing="S", role="sofa")
+    b = Placement("sofaB", Dims(w=200, d=90, h=80), x=0, y=93, facing="N", role="sofa")
+    assert validate_layout(LIVING, [a, b]).status == "fail"
+
+
+def test_the_two_endpoints_agree_about_a_dining_table():
+    """check_fit failed an 80cm table at y=386 while validate_layout passed it.
+
+    The disagreement was real and the resolution is that neither answer was
+    right by accident: a dining table does not need a 90cm circulation walkway
+    behind it, it needs chair pull-out room. Clearance is now chosen by role,
+    and both endpoints choose it the same way.
+    """
+    table = Placement("t", Dims(w=140, d=80, h=76), x=98, y=386, facing="S", role="dining_table")
+    assert check_fit(table, LIVING).status == validate_layout(LIVING, [table]).status == "pass"
+
+
+def test_a_dining_table_jammed_against_the_wall_still_fails():
+    """75cm of pull-out room is the floor. 30cm is not a dining table."""
+    table = Placement("t", Dims(w=140, d=80, h=76), x=98, y=441, facing="S", role="dining_table")
+    assert check_fit(table, LIVING).status == "fail"
+
+
+def test_a_wall_hugging_item_needs_no_front_clearance():
+    """A TV console lives against the wall. Demanding 90cm in front of it was
+    a seating rule fired at the wrong role.
+
+    Placed on the south wall, away from the north door — a console parked in a
+    door swing is a different (real) failure, covered above.
+    """
+    console = Placement("c", Dims(w=150, d=35, h=55), x=25, y=516, facing="N", role="tv_console")
+    assert check_fit(console, LIVING).status == "pass"
+
+
+def test_non_finite_dimensions_are_rejected():
+    for bad in (float("nan"), float("inf"), -300, 0):
+        verdict = check_fit(Placement("x", Dims(w=bad, d=90, h=80), x=0, y=0), LIVING)
+        assert verdict.status != "pass", f"{bad} produced a pass"
+
+
+def test_empty_route_is_unverified_not_passed():
+    """Nothing was checked, so nothing passed."""
+    assert check_access_path(Dims(500, 500, 500), []).status == "unverified"
+
+
+def test_empty_layout_is_unverified_not_passed():
+    assert validate_layout(LIVING, []).status == "unverified"
+
+
+def test_door_swing_rule_actually_runs_for_real_rooms():
+    """The rule existed but every Room was built with doors=[], so it never
+    executed once. Advertised-but-dead is the worst kind of check."""
+    from app.home import load_home
+
+    room = load_home().unit("unit01").room("living_dining").to_room()
+    assert room.doors, "living_dining has no door, so the swing rule cannot run"
+
+
+def test_turn_reports_when_an_item_must_be_stood_on_end():
+    """A 190cm sofa only makes the 150->89cm corner stood upright. The door
+    check says 'must be carried on its side'; the turn said nothing."""
+    turn = PathSegment("corridor turn", kind="turn", width_cm=150, height_cm=240, turn_into_cm=89)
+    verdict = check_access_path(Dims(w=190, d=85, h=85), [turn])
+    assert verdict.status == "pass"
+    assert any("end" in r.lower() or "upright" in r.lower() for r in verdict.reasons)
+
+
+def test_failing_route_does_not_mix_reassuring_notes_into_reasons():
+    """A `fail` used to ship 'clears at 90x90cm' as reasons[0]."""
+    segs = [
+        PathSegment("wide door", kind="door", width_cm=120, height_cm=210),
+        PathSegment("narrow door", kind="door", width_cm=60, height_cm=210),
+    ]
+    verdict = check_access_path(Dims(w=90, d=90, h=90), segs)
+    assert verdict.status == "fail"
+    assert all("clears" not in r for r in verdict.reasons)

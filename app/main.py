@@ -77,6 +77,15 @@ class FitRequest(BaseModel):
     x: float
     y: float
     facing: Literal["N", "S", "E", "W"] = "S"
+    role: str | None = Field(
+        default=None,
+        description=(
+            "What the item is. Decides how much clear space it needs in front: "
+            "90cm for seating, 75cm of pull-out room for tables, none for "
+            "wall-standing pieces. Omit it and the result is 'unverified' "
+            "rather than a guess."
+        ),
+    )
 
 
 class PlacementIn(BaseModel):
@@ -150,12 +159,23 @@ def principles_search(q: KbQuery) -> dict:
 @app.post("/products/search", tags=["catalog"])
 def products_search(q: ProductQuery) -> dict:
     """Search the amazon.sa catalog, with hard filters applied after retrieval."""
-    where = {"room": q.room} if q.room else None
+    # Filter on the per-room boolean, not the comma-joined string.
+    where = {f"room_{q.room}": True} if q.room else None
     hits = store.search("products", q.query, k=max(q.k * 3, 24), where=where)
 
+    dropped_unknown_price = 0
+
     def keep(p: dict) -> bool:
-        if q.max_price_sar is not None and (p.get("price_sar") or 0) > q.max_price_sar:
-            return False
+        nonlocal dropped_unknown_price
+        price = p.get("price_sar")
+        if q.max_price_sar is not None:
+            # -1 is the sentinel for "no price published". `or 0` turned that
+            # into free, so unpriced items passed every budget filter.
+            if price is None or price < 0:
+                dropped_unknown_price += 1
+                return False
+            if price > q.max_price_sar:
+                return False
         if q.max_width_cm is not None:
             width = p.get("width_cm")
             # An unknown width is not a small width. Keep it, flagged, and let
@@ -165,7 +185,15 @@ def products_search(q: ProductQuery) -> dict:
         return True
 
     filtered = [h for h in hits if keep(h)][: q.k]
-    return {"results": filtered, "count": len(filtered)}
+    for hit in filtered:
+        # Surface "no published price" as null rather than as -1.
+        if hit.get("price_sar") is not None and hit["price_sar"] < 0:
+            hit["price_sar"] = None
+    return {
+        "results": filtered,
+        "count": len(filtered),
+        "dropped_unknown_price": dropped_unknown_price,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -220,7 +248,10 @@ def fit_check(req: FitRequest) -> dict:
     """Does the item work *in* the room? Uses assembled dimensions."""
     _, spec = _room_or_404(req.unit, req.room)
     verdict = check_fit(
-        Placement(req.item.id, req.item.to_dims(), x=req.x, y=req.y, facing=req.facing),
+        Placement(
+            req.item.id, req.item.to_dims(),
+            x=req.x, y=req.y, facing=req.facing, role=req.role,
+        ),
         spec.to_room(),
     )
     return {"status": verdict.status, "reasons": verdict.reasons, "details": verdict.details}
@@ -306,10 +337,9 @@ def plan_quota(req: QuotaRequest) -> dict:
 
 @app.get("/health", tags=["meta"])
 def health() -> dict:
-    return {
-        "ok": True,
-        "collections": {
-            name: store.has_collection(name)
-            for name in ("eazli_kb", "design_principles", "products")
-        },
+    collections = {
+        name: store.has_collection(name)
+        for name in ("eazli_kb", "design_principles", "products")
     }
+    # `ok` used to be hardcoded True while reporting all three missing.
+    return {"ok": all(collections.values()), "collections": collections}

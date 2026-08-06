@@ -162,6 +162,30 @@
       "reason_contains": "between"
     },
     {
+      "id": "walkway-is-blocked-by-furniture-not-only-by-walls",
+      "intent": "Regression from the code review. The clearance rule measured only to the room wall, so two sofas 3cm apart returned a clean pass with both roles correctly declared — no unverified escape hatch, just a wrong answer.",
+      "kind": "layout",
+      "unit": "unit01",
+      "room": "living_dining",
+      "placements": [
+        {"id": "sofaA", "w": 200, "d": 90, "h": 80, "x": 0, "y": 120, "role": "sofa", "facing": "S"},
+        {"id": "sofaB", "w": 200, "d": 90, "h": 80, "x": 0, "y": 213, "role": "sofa", "facing": "N"}
+      ],
+      "expect_status": "fail",
+      "reason_contains": "blocked by"
+    },
+    {
+      "id": "a-dining-table-is-not-judged-by-the-seating-walkway-rule",
+      "intent": "Two agents disagreed about this table and both endpoints had to be reconciled. A dining table needs chair pull-out room, not a 90cm circulation walkway; applying the seating rule to it cost the catalogue's best-reviewed table. Clearance now comes from the item's role, and check_fit and validate_layout resolve it the same way.",
+      "kind": "layout",
+      "unit": "unit01",
+      "room": "living_dining",
+      "placements": [
+        {"id": "t", "w": 140, "d": 80, "h": 76, "x": 98, "y": 386, "role": "dining_table", "facing": "S"}
+      ],
+      "expect_status": "pass"
+    },
+    {
       "id": "kb-answers-the-agent-scope-question",
       "intent": "Adam's boundary is published policy. If retrieval cannot surface it, the auditor cannot enforce it.",
       "kind": "retrieval",

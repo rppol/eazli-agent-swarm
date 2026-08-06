@@ -175,3 +175,40 @@ def test_layout_with_roles_catches_the_sofa_table_gap(client):
         ],
     })
     assert r.json()["status"] == "fail"
+
+
+def test_fit_check_accepts_a_role_so_it_agrees_with_layout_validate(client):
+    """The role fix reached validate_layout but not /fit/check, so the two
+    endpoints returned different verdicts for the same dining table."""
+    body = {"unit": "unit01", "room": "living_dining",
+            "item": {"id": "t", "w": 140, "d": 80, "h": 76}, "x": 98, "y": 386,
+            "role": "dining_table"}
+    fit = client.post("/fit/check", json=body).json()
+    layout = client.post("/layout/validate", json={
+        "unit": "unit01", "room": "living_dining",
+        "placements": [{"item": body["item"], "x": 98, "y": 386, "role": "dining_table"}],
+    }).json()
+    assert fit["status"] == layout["status"] == "pass"
+
+
+def test_room_filter_does_not_hide_multi_room_products(client):
+    """Every floor lamp is tagged 'living_dining,bedroom'. An exact-match
+    filter made all eight invisible to a living-room search, which would lead
+    an agent to report the lighting slot unfillable."""
+    r = client.post("/products/search", json={
+        "query": "floor lamp standing light", "room": "living_dining", "k": 10})
+    cats = [p["category"] for p in r.json()["results"]]
+    assert "floor_lamp" in cats
+
+
+def test_unknown_price_is_not_treated_as_free(client):
+    """Unknown prices are stored as -1.0, which passed every budget filter."""
+    r = client.post("/products/search", json={
+        "query": "sofa", "max_price_sar": 1200, "k": 20})
+    for p in r.json()["results"]:
+        assert p["price_sar"] is None or p["price_sar"] <= 1200
+
+
+def test_health_is_not_ok_when_a_collection_is_missing(client):
+    body = client.get("/health").json()
+    assert body["ok"] == all(body["collections"].values())

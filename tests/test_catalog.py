@@ -158,13 +158,6 @@ def test_genuine_dining_table_keeps_its_category():
 # carton vs assembled
 # --------------------------------------------------------------------------
 
-def test_package_dimensions_become_the_carton():
-    p = parse_item(item(cat="wardrobe", title="MALMO 2 DOOR WARDROBE",
-                        **{"Product Dimensions": "84 x 53 x 198 cm; 64 kg"}))
-    assert p.carton is not None
-    assert max(p.carton.w, p.carton.d, p.carton.h) == 198
-
-
 def test_required_assembly_marks_the_item_flat_pack():
     p = parse_item(item(cat="bookshelf", title="5 Tier Bookshelf",
                         **{"Item Dimensions D x W x H": "30D x 60W x 154H centimeters",
@@ -223,3 +216,64 @@ def test_the_polluted_search_results_are_caught(catalog):
 def test_every_product_has_a_stable_id_and_source_url(catalog):
     assert len({p.asin for p in catalog}) == 75
     assert all(p.url.startswith("https://www.amazon.sa/") for p in catalog)
+
+
+# --------------------------------------------------------------------------
+# Regressions from the code review. Each of these produced a confident,
+# plausible, wrong number.
+# --------------------------------------------------------------------------
+
+def test_trailing_weight_does_not_destroy_the_unit():
+    """'inches; 5 kg' matched 'kg', found no conversion, and silently fell back
+    to 1.0 — recording a 203cm wardrobe as 80cm tall, flagged 'stated'."""
+    p = parse_item(item(cat="wardrobe", title="2 Door Wardrobe Closet Oak",
+                        **{"Item Dimensions D x W x H": "24D x 60W x 80H inches; 55 kg"}))
+    assert p.dims.h == pytest.approx(203.2, abs=0.5)
+    assert p.dims.w == pytest.approx(152.4, abs=0.5)
+
+
+def test_metres_with_a_trailing_weight_convert_correctly():
+    p = parse_item(item(**{"Item Dimensions D x W x H": "1.05D x 2.2W x 0.83H Meters; 90 kg"}))
+    assert (p.dims.w, p.dims.d, p.dims.h) == (220, 105, 83)
+
+
+def test_a_missing_axis_is_not_silently_zero():
+    """'220W x 83H' has no depth. Zero-filling made it 'known' and 'stated',
+    so a sofa with no depth passed every door and hallway on the route."""
+    p = parse_item(item(**{"Item Dimensions D x W x H": "220W x 83H centimeters"}))
+    assert not p.dims.known or p.dims.d
+    assert p.dims_confidence != "stated" or p.dims.d
+
+
+def test_conflict_is_still_caught_when_one_field_is_short():
+    p = parse_item(item(**{
+        "Item Dimensions D x W x H": "220W x 83H centimeters",
+        "Item Dimensions": "95 x 220 x 83 centimeters",
+    }))
+    assert not p.usable
+
+
+def test_dimensions_glued_to_their_unit_are_not_dropped():
+    """'120x60x45cm' lost the 45 because the regex needed a delimiter after it,
+    then padding made the coffee table 2cm tall."""
+    p = parse_item(item(cat="coffee_table", title="Coffee Table",
+                        **{"Item Dimensions": "120x60x45cm"}))
+    assert p.dims.known
+    assert sorted(filter(None, [p.dims.w, p.dims.d, p.dims.h])) == [45, 60, 120]
+
+
+def test_product_dimensions_are_not_claimed_as_a_carton():
+    """'Product Dimensions' is the assembled size. Treating it as a carton made
+    /access/check report measured_using='carton' for a measurement that was
+    never a carton, and suppressed the assembled-dimensions caveat."""
+    p = parse_item(item(cat="wardrobe", title="MALMO 2 DOOR WARDROBE",
+                        **{"Product Dimensions": "84 x 53 x 198 cm; 64 kg"}))
+    assert p.carton is None
+
+
+def test_a_real_package_dimension_still_becomes_the_carton():
+    p = parse_item(item(cat="bed", title="Bed Frame",
+                        **{"Item Dimensions D x W x H": "200D x 160W x 35H centimeters",
+                           "Package Dimensions": "120 x 40 x 18 cm; 30 kg"}))
+    assert p.carton is not None
+    assert max(p.carton.w, p.carton.d, p.carton.h) == 120

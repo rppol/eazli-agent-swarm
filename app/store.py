@@ -9,6 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 import chromadb
+from chromadb.errors import NotFoundError
 from chromadb.utils import embedding_functions
 
 CHROMA_DIR = "data/chroma"
@@ -31,10 +32,18 @@ def collection(name: str, path: str = CHROMA_DIR):
 
 
 def has_collection(name: str, path: str = CHROMA_DIR) -> bool:
+    """True if the collection exists.
+
+    Narrowly scoped on purpose. A blanket `except Exception` here turned every
+    retrieval failure — a corrupt store, a bad path, a permissions error — into
+    an empty result set, which is indistinguishable from "nothing matched". An
+    agent asking what the Fitment clause says would get zero hits and answer
+    from its own priors instead.
+    """
     try:
         collection(name, path)
         return True
-    except Exception:
+    except (ValueError, NotFoundError):
         return False
 
 

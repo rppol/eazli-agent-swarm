@@ -122,7 +122,7 @@ def _run_layout(s: dict, card: Scorecard) -> None:
     room = home.unit(s["unit"]).room(s["room"]).to_room()
     placements = [
         Placement(
-            p["id"], _dims(p), x=p["x"], y=p["y"], role=p.get("role")
+            p["id"], _dims(p), x=p["x"], y=p["y"], role=p.get("role"), facing=p.get("facing", "S")
         )
         for p in s["placements"]
     ]

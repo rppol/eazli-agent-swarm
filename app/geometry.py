@@ -77,7 +77,17 @@ class Dims:
 
     @property
     def known(self) -> bool:
-        return None not in (self.w, self.d, self.h)
+        """True only for three real, positive, finite measurements.
+
+        A bare `is not None` check let NaN through, and every comparison
+        against NaN is False — so no rule ever appended a reason and the item
+        came back `pass`. Negatives and zeros did the same. Anything that is
+        not a usable measurement is treated as no measurement at all.
+        """
+        return all(
+            v is not None and math.isfinite(v) and v > 0
+            for v in (self.w, self.d, self.h)
+        )
 
     @property
     def triple(self) -> tuple[float, float, float]:
@@ -107,9 +117,37 @@ class Room:
 
 SEATING_ROLES = {"sofa", "armchair", "chair", "seat", "dining_chair", "dining_chairs_pair"}
 TABLE_ROLES = {"coffee_table", "dining_table", "table", "side_table"}
-KNOWN_ROLES = SEATING_ROLES | TABLE_ROLES | {
-    "bed", "wardrobe", "bookshelf", "tv_console", "floor_lamp", "rug", "other",
+WALL_ROLES = {"bed", "wardrobe", "bookshelf", "tv_console", "floor_lamp", "rug", "other"}
+KNOWN_ROLES = SEATING_ROLES | TABLE_ROLES | WALL_ROLES
+
+# How much clear space each role needs in front of it, and why they differ.
+#
+#   seating  — a real circulation route runs past a sofa, so the 90cm rule
+#   tables   — what a dining table needs behind it is chair pull-out room, not
+#              a walkway; demanding 90cm there was a seating rule fired at the
+#              wrong role, and it cost the catalogue's best-reviewed table
+#   wall     — a console or bookshelf lives against the wall by design
+#
+# Both check_fit and validate_layout resolve clearance through this table, so
+# the two endpoints cannot disagree about the same item again.
+FRONT_CLEARANCE_BY_ROLE: dict[str, float] = {
+    **{r: WALKWAY_PRIMARY_CM for r in SEATING_ROLES},
+    **{r: WALKWAY_SECONDARY_CM for r in TABLE_ROLES},
+    **{r: 0.0 for r in WALL_ROLES},
 }
+
+
+def front_clearance_for(role: str | None) -> float | None:
+    """None means "we cannot tell which rule applies".
+
+    Guessing the strictest rule for an unidentified item sounds safe but is
+    not: it produces a confident `fail` for a reason that may be entirely
+    spurious. The honest answer to "what rule applies here?" when we do not
+    know is `unverified`, not a rejection.
+    """
+    if role is None:
+        return None
+    return FRONT_CLEARANCE_BY_ROLE.get(role, WALKWAY_PRIMARY_CM)
 
 
 @dataclass
@@ -174,6 +212,10 @@ class Verdict:
 
 
 def _combine(statuses: Sequence[Status]) -> Status:
+    # Nothing checked is not everything passed. An empty route or an empty
+    # layout must not read as a clean bill of health.
+    if not statuses:
+        return "unverified"
     if "fail" in statuses:
         return "fail"
     if "unverified" in statuses:
@@ -203,10 +245,23 @@ def _unverified(dims: Dims) -> Verdict:
 def check_fit(
     placement: Placement,
     room: Room,
-    front_clearance_cm: float = WALKWAY_PRIMARY_CM,
+    front_clearance_cm: float | None = None,
+    others: Sequence["Placement"] = (),
 ) -> Verdict:
+    """Does the item work in the room?
+
+    `front_clearance_cm` defaults to whatever the item's role requires. Pass a
+    number to override, or 0 to skip. `others` are the rest of the layout: the
+    walkway in front of an item is blocked by furniture, not only by walls.
+    """
     if not placement.dims.known:
         return _unverified(placement.dims)
+
+    role_unknown = False
+    if front_clearance_cm is None:
+        front_clearance_cm = front_clearance_for(placement.resolved_role())
+        if front_clearance_cm is None:
+            role_unknown, front_clearance_cm = True, 0.0
 
     reasons: list[str] = []
     x0, y0, x1, y1 = placement.footprint()
@@ -238,12 +293,25 @@ def check_fit(
             reasons.append(f"{placement.item_id} overlaps fixed fixture {fixture.item_id}.")
 
     if front_clearance_cm:
-        gap = _front_gap(placement, room)
+        gap, blocker = _front_gap(placement, room, others)
         if gap < front_clearance_cm:
+            against = f"{blocker}" if blocker else "the wall"
             reasons.append(
-                f"Only {gap:.0f}cm of walkway in front of {placement.item_id}; "
-                f"{front_clearance_cm:.0f}cm needed. {RULES['walkway_primary']['text']}"
+                f"Only {gap:.0f}cm of walkway in front of {placement.item_id} "
+                f"(blocked by {against}); {front_clearance_cm:.0f}cm needed. "
+                f"{RULES['walkway_primary']['text']}"
             )
+
+    if role_unknown and not reasons:
+        return Verdict(
+            status="unverified",
+            reasons=[
+                f"Cannot determine the role of {placement.item_id}, so the walkway "
+                f"rule was not applied. Pass an explicit role (one of: "
+                f"{', '.join(sorted(KNOWN_ROLES))}) to get a verified result."
+            ],
+            details={"footprint": [x0, y0, x1, y1]},
+        )
 
     return Verdict(
         status="fail" if reasons else "pass",
@@ -266,14 +334,55 @@ def _swing_box(door: Door, room: Room) -> tuple[float, float, float, float]:
     return (room.width_cm - r, door.offset_cm, room.width_cm, door.offset_cm + door.width_cm)
 
 
-def _front_gap(placement: Placement, room: Room) -> float:
+def _front_gap(
+    placement: Placement,
+    room: Room,
+    others: Sequence[Placement] = (),
+) -> tuple[float, str | None]:
+    """Clear distance in front of an item, and what limits it.
+
+    Previously this measured only to the wall, so two sofas 3cm apart passed:
+    the rule never looked at the furniture standing in the way. A coffee table
+    is exempt in front of seating — it is the intended companion, and the
+    40cm reach rule governs that relationship instead.
+    """
     x0, y0, x1, y1 = placement.footprint()
-    return {
+    gap = {
         "S": room.depth_cm - y1,
         "N": y0,
         "E": room.width_cm - x1,
         "W": x0,
     }[placement.facing]
+    blocker: str | None = None
+
+    for other in others:
+        if other is placement or not other.dims.known:
+            continue
+        if _is_companion(placement, other):
+            continue
+        ox0, oy0, ox1, oy1 = other.footprint()
+
+        if placement.facing == "S" and ox1 > x0 and ox0 < x1 and oy0 >= y1:
+            distance = oy0 - y1
+        elif placement.facing == "N" and ox1 > x0 and ox0 < x1 and oy1 <= y0:
+            distance = y0 - oy1
+        elif placement.facing == "E" and oy1 > y0 and oy0 < y1 and ox0 >= x1:
+            distance = ox0 - x1
+        elif placement.facing == "W" and oy1 > y0 and oy0 < y1 and ox1 <= x0:
+            distance = x0 - ox1
+        else:
+            continue
+
+        if distance < gap:
+            gap, blocker = distance, other.item_id
+
+    return gap, blocker
+
+
+def _is_companion(a: Placement, b: Placement) -> bool:
+    """A coffee table belongs in front of a sofa; it is not an obstruction."""
+    roles = {a.resolved_role(), b.resolved_role()}
+    return roles == {"sofa", "coffee_table"} or roles == {"armchair", "coffee_table"}
 
 
 # --------------------------------------------------------------------------
@@ -295,10 +404,10 @@ def validate_layout(room: Room, placements: Sequence[Placement]) -> Verdict:
         statuses.append("unverified")
 
     for p in placements:
-        # Only seating gets a front-walkway requirement; a coffee table in the
-        # middle of the room is not an obstruction to itself.
-        needs_front = p.resolved_role() in SEATING_ROLES
-        v = check_fit(p, room, front_clearance_cm=WALKWAY_PRIMARY_CM if needs_front else 0)
+        # Clearance comes from the role table, the same one check_fit uses, and
+        # the rest of the layout is passed in so a walkway can be blocked by
+        # furniture rather than only by a wall.
+        v = check_fit(p, room, others=[o for o in placements if o is not p])
         statuses.append(v.status)
         reasons.extend(v.reasons)
 
@@ -322,8 +431,14 @@ def validate_layout(room: Room, placements: Sequence[Placement]) -> Verdict:
 
 
 def _is_sofa_table_pair(a: Placement, b: Placement) -> bool:
+    """The 40cm reach rule is about a coffee table in front of seating.
+
+    It used to match any seating against any table, so an armchair pulled up to
+    a dining table was told to sit 40cm back from it — the opposite of what a
+    dining chair should do.
+    """
     roles = {a.resolved_role(), b.resolved_role()}
-    return bool(roles & {"sofa", "armchair"}) and bool(roles & TABLE_ROLES)
+    return bool(roles & {"sofa", "armchair"}) and "coffee_table" in roles
 
 
 def _gap_between(a: tuple, b: tuple) -> float:
@@ -346,7 +461,8 @@ def check_access_path(dims: Dims, segments: Sequence[PathSegment]) -> Verdict:
     if not dims.known:
         return _unverified(dims)
 
-    reasons: list[str] = []
+    passed: list[str] = []
+    failed: list[str] = []
     statuses: list[Status] = []
 
     for seg in segments:
@@ -358,10 +474,18 @@ def check_access_path(dims: Dims, segments: Sequence[PathSegment]) -> Verdict:
             ok, note = _fits_through_opening(dims, seg)
 
         statuses.append("pass" if ok else "fail")
-        if note:
-            reasons.append(note)
+        (passed if ok else failed).append(note)
 
-    return Verdict(status=_combine(statuses), reasons=reasons)
+    status = _combine(statuses)
+    # A failing verdict used to ship "clears at 90x90cm" as reasons[0], which
+    # reads as reassurance attached to a rejection. On a fail, the reasons are
+    # the failures; the rest stays in details for anyone who wants the whole
+    # route.
+    return Verdict(
+        status=status,
+        reasons=failed if status == "fail" else passed,
+        details={"route_notes": passed + failed},
+    )
 
 
 def _fits_through_opening(dims: Dims, seg: PathSegment) -> tuple[bool, str]:
@@ -430,9 +554,13 @@ def _can_turn(dims: Dims, seg: PathSegment) -> tuple[bool, str]:
             continue
         limit = _max_turn_length(a, b, thickness)
         if length <= limit:
+            # The door check says "must be carried on its side" when it has to
+            # tip something; the turn said nothing, so a sofa that only makes
+            # the corner stood on its end was reported as a bare pass.
+            tipped = "" if vertical == h else " — must be stood on end to make the corner."
             return True, (
                 f"{seg.name} (turn {a:.0f}cm into {b:.0f}cm): clears with "
-                f"{length:.0f}cm length against a {limit:.0f}cm limit."
+                f"{length:.0f}cm length against a {limit:.0f}cm limit{tipped or '.'}"
             )
         if best is None or limit > best[2]:
             best = (length, thickness, limit)

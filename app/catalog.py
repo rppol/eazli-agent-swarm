@@ -142,6 +142,11 @@ class Product:
             "rating": self.rating or 0.0,
             "reviews": self.reviews,
             "room": ",".join(self.rooms),
+            # One boolean per room as well as the joined string. Chroma's
+            # `where` is exact equality, so filtering on the joined value made
+            # every dual-room product — all eight floor lamps, every rug —
+            # invisible to a single-room search.
+            **{f"room_{r}": True for r in self.rooms},
             "style": ",".join(self.style_tags),
             "flags": ",".join(self.flags),
             "usable": self.usable,
@@ -178,7 +183,12 @@ def _labelled(text: str) -> dict[str, float] | None:
     pairs = re.findall(r"([\d.]+)\s*([DWHL])\b", text, re.I)
     if len(pairs) < 2:
         return None
-    factor = _unit_factor(text)
+    # Split on ';' before reading the unit, exactly as _bare does. Without it,
+    # "24D x 60W x 80H inches; 55 kg" matches "kg", finds no conversion and
+    # silently falls back to 1.0 — recording a 203cm wardrobe as 80cm tall and
+    # marking it 'stated'. Metres are usually rescued by the plausibility
+    # bounds; a 2.54x shrink from inches lands inside them.
+    factor = _unit_factor(text.split(";")[0])
     out: dict[str, float] = {}
     for value, axis in pairs:
         out[axis.upper()] = round(float(value) * factor, 1)
@@ -186,28 +196,40 @@ def _labelled(text: str) -> dict[str, float] | None:
 
 
 def _bare(text: str) -> list[float] | None:
-    """Parse an unlabelled string like '101.6 x 168.9 x 81.2 centimeters'."""
-    numbers = re.findall(r"([\d.]+)\s*(?=x|X|;|$|\s)", text)
-    values = []
-    for n in numbers[:3]:
-        try:
-            values.append(float(n))
-        except ValueError:
-            pass
+    """Parse an unlabelled string like '101.6 x 168.9 x 81.2 centimeters'.
+
+    The old lookahead required a delimiter after the digits, so '120x60x45cm'
+    silently lost the 45 and the padding logic then made a coffee table 2cm
+    tall. Match the numbers directly instead.
+    """
+    head = text.split(";")[0]
+    values = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", head)][:3]
     if len(values) < 2:
         return None
-    factor = _unit_factor(text.split(";")[0])
+    factor = _unit_factor(head)
     return [round(v * factor, 1) for v in values]
 
 
-def _from_labelled(axes: dict[str, float]) -> tuple[float, float, float]:
-    """Map axis letters to (w, d, h). L is treated as the long axis."""
-    w = axes.get("W") or axes.get("L") or 0.0
-    d = axes.get("D") or axes.get("L") or 0.0
-    h = axes.get("H") or 0.0
+def _from_labelled(axes: dict[str, float]) -> tuple[float, float, float] | None:
+    """Map axis letters to (w, d, h), or None if a plan axis is missing.
+
+    This used to fall back to 0.0 for an absent axis. Zero is not None, so
+    `Dims.known` was True, confidence stayed 'stated', nothing was flagged, and
+    a sofa with no depth cleared every door on the route. An axis we did not
+    read is an axis we do not know.
+    """
     if "W" in axes and "L" in axes and "D" not in axes:
-        # 'L x W' goods (rugs): the long side is the width, the other the depth.
+        # 'L x W' goods such as rugs: long side is the width, the other the depth.
         w, d = max(axes["L"], axes["W"]), min(axes["L"], axes["W"])
+    else:
+        w = axes.get("W", axes.get("L"))
+        d = axes.get("D", axes.get("L") if "W" in axes else None)
+
+    if w is None or d is None:
+        return None
+
+    # Height is the one axis a flat good legitimately omits.
+    h = axes.get("H") or 2.0
     return w, d, h
 
 
@@ -249,12 +271,22 @@ def _extract_dims(attrs: dict) -> tuple[Dims, str, str, list[str]]:
     labelled = _labelled(attrs[labelled_key]) if labelled_key else None
     bare = _bare(attrs[bare_key]) if bare_key else None
 
-    if labelled:
-        w, d, h = _from_labelled(labelled)
+    resolved = _from_labelled(labelled) if labelled else None
+
+    if labelled and resolved is None:
+        # The labelled field exists but is missing a plan axis. Falling back to
+        # the bare field would mean guessing which number is the depth, so the
+        # honest answer is that we could not establish the dimensions.
+        return (
+            Dims(None, None, None, confidence="missing"),
+            "conflicted",
+            labelled_key or "",
+            ["incomplete_labelled_dimensions"],
+        )
+
+    if resolved:
+        w, d, h = resolved
         confidence, source = "stated", labelled_key
-        # Rugs and other flat goods give only two axes.
-        if not h:
-            h = 2.0
     elif bare:
         # No axis labels, and the ordering is not consistent across listings, so
         # this is a weaker reading even though the numbers are usually right.
@@ -265,12 +297,15 @@ def _extract_dims(attrs: dict) -> tuple[Dims, str, str, list[str]]:
         return Dims(None, None, None, confidence="missing"), "missing", "", []
 
     flags: list[str] = []
-    if labelled and bare:
+    if resolved and bare:
         # Compare as multisets: the fields often carry the same numbers in a
         # different order, which is not a conflict, only ambiguity we resolved.
-        a = sorted(round(v) for v in (w, d, h) if v)
-        b = sorted(round(v) for v in bare if v)
-        if len(a) == len(b) and any(abs(x - y) > 5 for x, y in zip(a, b)):
+        a = sorted(round(v) for v in (w, d, h))
+        b = sorted(round(v) for v in bare)
+        # A differing count is itself evidence of a parse problem. The old
+        # `len(a) == len(b)` guard skipped exactly the cases most likely to be
+        # wrong, so a short field was never compared against a full one.
+        if len(a) != len(b) or any(abs(x - y) > 5 for x, y in zip(a, b)):
             flags.append("dimension_conflict")
             confidence = "conflicted"
 
@@ -278,8 +313,15 @@ def _extract_dims(attrs: dict) -> tuple[Dims, str, str, list[str]]:
 
 
 def _extract_carton(attrs: dict) -> Dims | None:
+    """Only a *package* dimension is a carton.
+
+    'Product Dimensions' is the assembled size — and it is also what the bare
+    reader uses for the assembled dims. Claiming it as a carton made
+    /access/check report `measured_using: "carton"` for a measurement that was
+    never a carton, and suppressed the caveat that exists to say so.
+    """
     for key in attrs:
-        if re.search(r"package dimensions|product dimensions", key, re.I):
+        if re.search(r"package dimensions", key, re.I):
             values = _bare(attrs[key])
             if values and len(values) >= 3:
                 return Dims(w=values[0], d=values[1], h=values[2], confidence="stated")

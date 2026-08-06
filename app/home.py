@@ -9,7 +9,7 @@ had to assume (ceiling height, door leaf widths, lift car height) is marked
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -23,15 +23,22 @@ class RoomSpec:
     width_cm: float
     depth_cm: float
     height_cm: float
+    doors: list[Door] = field(default_factory=list)
 
     def to_room(self, doors: list[Door] | None = None) -> Room:
-        """Convert to the geometry engine's Room."""
+        """Convert to the geometry engine's Room.
+
+        Rooms used to be built with `doors=[]` unconditionally, so the door
+        swing rule iterated an empty list and never executed once — while the
+        API advertised it as enforced. Advertised-but-dead is worse than
+        absent, because it reports `pass`.
+        """
         return Room(
             name=self.name,
             width_cm=self.width_cm,
             depth_cm=self.depth_cm,
             height_cm=self.height_cm,
-            doors=doors or [],
+            doors=doors if doors is not None else self.doors,
         )
 
 
@@ -87,7 +94,27 @@ class Home:
             f"Main door leaf assumed {d['main_door_width_cm']}cm, internal doors "
             f"{d['internal_door_width_cm']}cm — not dimensioned on the plan.",
             "Lift car heights assumed 220cm — the plan gives car floor area only.",
+            "Door POSITIONS are a convention, not a survey: one inward-swinging "
+            "door per room on the north wall, 30cm from the corner. The plan "
+            "does not locate doors. Any door-swing verdict inherits this.",
         ]
+
+
+def _default_door(room_name: str, width_cm: float, defaults: dict) -> Door:
+    """Every room has a door; the floor plan just does not dimension one.
+
+    Rather than leave the swing rule dead, we place one door per room using the
+    assumed leaf widths already declared in `defaults`, offset a little from the
+    corner. The position is a convention, not a survey — `Home.assumptions`
+    says so, and any verdict that turns on it must repeat that.
+    """
+    leaf = (
+        defaults["main_door_width_cm"]
+        if room_name == "living_dining"
+        else defaults["internal_door_width_cm"]
+    )
+    offset = min(30.0, max(0.0, width_cm - leaf))
+    return Door(wall="N", offset_cm=offset, width_cm=leaf, swing="in")
 
 
 def _segment(spec: dict) -> PathSegment:
@@ -116,6 +143,7 @@ def load_home(path: str = "data/home.json") -> Home:
                     width_cm=r["width_cm"],
                     depth_cm=r["depth_cm"],
                     height_cm=r["height_cm"],
+                    doors=[_default_door(r["name"], r["width_cm"], raw["defaults"])],
                 )
                 for r in u["rooms"]
             ],

@@ -15,7 +15,16 @@ Confirm the tool service is up:
 curl -s localhost:8000/health
 ```
 
-All three collections (`eazli_kb`, `design_principles`, `products`) must report `true`. If the service is down, start it with `uv run uvicorn app.main:app --port 8000` and wait for health to pass. If a collection is missing, rebuild it with `PYTHONPATH=. uv run python ingest/build_kb.py` or `ingest/build_catalog.py`.
+`ok` must be `true` and all three collections (`eazli_kb`, `design_principles`, `products`) must report `true`. If the service is down, start it with `uv run uvicorn app.main:app --port 8000`. If a collection is missing, rebuild it with `PYTHONPATH=. uv run python ingest/build_kb.py` or `ingest/build_catalog.py`.
+
+**Confirm the running service is current.** A long-lived uvicorn started without `--reload` keeps serving the code it was launched with. This has already caused one silent failure: a validator fix landed in source and in the tests, the service kept returning the pre-fix `pass`, and an entire run's spatial verdicts were produced by the exact bug the run believed it had fixed. The cheapest check is a canary — a layout with no roles must come back `unverified`:
+
+```bash
+uv run python cli.py layout unit01 living_dining \
+  '[{"item":{"id":"X","w":185,"d":88,"h":80},"x":40,"y":300}]'
+```
+
+If that says `pass`, the process is stale. Restart it before trusting anything.
 
 ## You are the dispatcher
 
