@@ -12,7 +12,7 @@ override.
 Claude Code subagents        MCP shim  →   FastAPI   →   ChromaDB
   zeina-guide      intake, routing        geometry.py     eazli_kb  (78)
   noura-designer   layout slots           (deterministic, products  (75)
-  adam-advisor     product sourcing        86 tests)      design_principles (4)
+  adam-advisor     product sourcing       110 tests)      design_principles (4)
   fit-auditor      adversarial re-check
   eazli-judge      LLM-as-judge eval
   surveyor         floor plan → geometry
@@ -49,6 +49,19 @@ FAIL   — "room door (door 75x210cm): item 218x95x84cm cannot pass in any orien
 ```
 
 Same sofa. Different room. Only the route differs.
+
+<img src="docs/img/route-bedroom.svg" width="900" alt="Delivery route showing the sofa blocked at the 75cm bedroom door">
+
+The layout below is rendered **from** `data/home.json` and the real product
+dimensions — not drawn to illustrate them. Dashed outlines are slots the
+catalogue could not fill, each carrying the measurement that ruled every
+candidate out.
+
+<img src="docs/img/floorplan.svg" width="560" alt="Top-down plan of the validated living/dining layout">
+
+There is a real 3D model too — [`docs/img/room.obj`](docs/img/room.obj), metres,
+Y-up, objects named by ASIN. See **[SHOWCASE.md](SHOWCASE.md)** for the
+isometric view and how the agents argued their way here.
 
 ---
 
@@ -110,12 +123,12 @@ wherever a verdict depends on one.
 
 Split by decidability, which is the point:
 
-**Ground truth (26 scenarios, no model involved)** — `evals/run_evals.py`. Geometry,
+**Ground truth (30 scenarios, no model involved)** — `evals/run_evals.py`. Geometry,
 catalogue provenance, plan limits. Runs in CI, exits non-zero on regression.
 
 ```
 access 6/6 · access_carton 2/2 · fit 3/3 · quota 3/3
-catalog 9/9 · retrieval 2/2 · provenance 1/1        total 26/26
+catalog 9/9 · layout 4/4 · retrieval 2/2 · provenance 1/1   total 30/30
 ```
 
 **LLM-as-judge (6 dimensions)** — `eazli-judge` grades only what is genuinely
@@ -156,6 +169,7 @@ mcp_server.py       MCP shim — typed passthrough, no logic
 cli.py              CLI over the same endpoints
 ingest/             KB and catalogue builders + browser capture server
 evals/              ground-truth scenarios and runner
+viz/render.py       plan, isometric and OBJ generated from the engine
 .claude/agents/     the seven agent definitions
 docs/teardown.md    product analysis of eazli
 docs/demo-run.md    a full recorded swarm run
@@ -168,6 +182,7 @@ disagree about whether something fits.
 
 ## Reading order
 
+0. [`SHOWCASE.md`](SHOWCASE.md) — **start here.** How the agents interacted, where they disagreed, and the layout drawn from the engine
 1. [`docs/teardown.md`](docs/teardown.md) — the product argument
 2. [`docs/demo-run.md`](docs/demo-run.md) — a real run, including the bug it found
 3. [`app/geometry.py`](app/geometry.py) — the deterministic core

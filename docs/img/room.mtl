@@ -1,0 +1,21 @@
+# Generated from data/home.json — colours match the plan legend
+newmtl floor
+Kd 0.894 0.906 0.922
+Ks 0.05 0.05 0.05
+
+newmtl wall
+Kd 0.722 0.757 0.800
+Ks 0.05 0.05 0.05
+
+newmtl sofa
+Kd 0.298 0.431 0.961
+Ks 0.05 0.05 0.05
+
+newmtl dining_table
+Kd 0.910 0.349 0.047
+Ks 0.05 0.05 0.05
+
+newmtl floor_lamp
+Kd 0.682 0.243 0.788
+Ks 0.05 0.05 0.05
+

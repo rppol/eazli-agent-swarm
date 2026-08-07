@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="596" height="528" viewBox="0 0 596 528" font-family="ui-sans-serif,system-ui,sans-serif">
+<rect width="596" height="528" fill="#f5f7fa" rx="10"/>
+<text x="60" y="30" font-size="15" font-weight="600" fill="#1f2933">The same layout in 3D</text>
+<polygon points="355.9,193.0 535.7,296.9 239.9,467.7 60.0,363.8" fill="#ffffff" fill-opacity="1.0" stroke="#cbd2d9" stroke-width="1.6" stroke-linejoin="round"/>
+<line x1="409.5" y1="224.0" x2="113.7" y2="394.8" stroke="#cbd2d9" stroke-width="0.7"/>
+<line x1="463.2" y1="255.0" x2="167.4" y2="425.8" stroke="#cbd2d9" stroke-width="0.7"/>
+<line x1="516.9" y1="286.0" x2="221.1" y2="456.8" stroke="#cbd2d9" stroke-width="0.7"/>
+<line x1="302.2" y1="224.0" x2="482.0" y2="327.9" stroke="#cbd2d9" stroke-width="0.7"/>
+<line x1="248.5" y1="255.0" x2="428.3" y2="358.8" stroke="#cbd2d9" stroke-width="0.7"/>
+<line x1="194.8" y1="286.0" x2="374.6" y2="389.8" stroke="#cbd2d9" stroke-width="0.7"/>
+<line x1="141.1" y1="317.0" x2="321.0" y2="420.9" stroke="#cbd2d9" stroke-width="0.7"/>
+<line x1="87.4" y1="348.0" x2="267.3" y2="451.9" stroke="#cbd2d9" stroke-width="0.7"/>
+<polygon points="319.9,241.7 378.9,275.8 352.1,291.3 293.0,257.2" fill="#c53030" fill-opacity="0.05" stroke="#c53030" stroke-width="1.3" stroke-dasharray="6 4"/>
+<polygon points="369.3,200.8 449.8,247.2 431.0,258.1 350.5,211.6" fill="#c53030" fill-opacity="0.05" stroke="#c53030" stroke-width="1.3" stroke-dasharray="6 4"/>
+<polygon points="234.5,330.0 258.7,344.0 231.8,359.5 207.7,345.5" fill="#c53030" fill-opacity="0.05" stroke="#c53030" stroke-width="1.3" stroke-dasharray="6 4"/>
+<polygon points="162.6,371.6 186.7,385.5 159.9,401.0 135.7,387.1" fill="#c53030" fill-opacity="0.05" stroke="#c53030" stroke-width="1.3" stroke-dasharray="6 4"/>
+<polygon points="355.9,193.0 535.7,296.9 535.7,231.7 355.9,127.9" fill="#3e4c59" fill-opacity="0.08" stroke="#3e4c59" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="355.9,193.0 60.0,363.8 60.0,298.7 355.9,127.9" fill="#3e4c59" fill-opacity="0.13" stroke="#3e4c59" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="202.8,284.4 202.8,231.7 248.5,205.4 248.5,258.1" fill="#4c6ef5" fill-opacity="0.55" stroke="#4c6ef5" stroke-width="1.2" stroke-linejoin="round"/>
+<polygon points="202.8,284.4 304.8,343.4 304.8,290.6 202.8,231.7" fill="#4c6ef5" fill-opacity="0.72" stroke="#4c6ef5" stroke-width="1.2" stroke-linejoin="round"/>
+<polygon points="248.5,205.4 350.5,264.3 304.8,290.6 202.8,231.7" fill="#4c6ef5" fill-opacity="0.95" stroke="#4c6ef5" stroke-width="1.2" stroke-linejoin="round"/>
+<text x="276.7" y="246.0" font-size="10" font-weight="700" text-anchor="middle" fill="#ffffff">sofa 190cm</text>
+<text x="276.7" y="258.0" font-size="8.5" text-anchor="middle" fill="#ffffff" fill-opacity="0.85">h 85cm</text>
+<polygon points="331.7,330.9 331.7,234.8 347.8,225.5 347.8,321.6" fill="#ae3ec9" fill-opacity="0.55" stroke="#ae3ec9" stroke-width="1.2" stroke-linejoin="round"/>
+<polygon points="331.7,330.9 347.8,340.2 347.8,244.1 331.7,234.8" fill="#ae3ec9" fill-opacity="0.72" stroke="#ae3ec9" stroke-width="1.2" stroke-linejoin="round"/>
+<polygon points="347.8,225.5 363.9,234.8 347.8,244.1 331.7,234.8" fill="#ae3ec9" fill-opacity="0.95" stroke="#ae3ec9" stroke-width="1.2" stroke-linejoin="round"/>
+<text x="361.8" y="228.8" font-size="10" font-weight="700" fill="#ae3ec9">floor lamp</text>
+<text x="361.8" y="240.8" font-size="8.5" fill="#7b8794">h 155cm</text>
+<polygon points="163.6,364.7 163.6,317.6 201.2,295.9 201.2,343.0" fill="#e8590c" fill-opacity="0.55" stroke="#e8590c" stroke-width="1.2" stroke-linejoin="round"/>
+<polygon points="163.6,364.7 228.1,401.9 228.1,354.8 163.6,317.6" fill="#e8590c" fill-opacity="0.72" stroke="#e8590c" stroke-width="1.2" stroke-linejoin="round"/>
+<polygon points="201.2,295.9 265.6,333.1 228.1,354.8 163.6,317.6" fill="#e8590c" fill-opacity="0.95" stroke="#e8590c" stroke-width="1.2" stroke-linejoin="round"/>
+<text x="214.6" y="323.4" font-size="10" font-weight="700" text-anchor="middle" fill="#ffffff">dining table</text>
+<text x="214.6" y="335.4" font-size="8.5" text-anchor="middle" fill="#ffffff" fill-opacity="0.85">h 76cm</text>
+<text x="60" y="510" font-size="10" fill="#7b8794">Isometric projection of the validated layout. Heights are real product heights.</text>
+</svg>

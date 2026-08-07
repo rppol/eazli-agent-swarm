@@ -1,4 +1,4 @@
-.PHONY: setup index serve test evals check demo clean
+.PHONY: setup index serve test evals check demo viz clean
 
 setup:
 	uv sync
@@ -29,6 +29,9 @@ demo:
 	@echo "\n== flat-packed armchair: assembled vs carton =="
 	@uv run python cli.py access unit01 bedroom 90 90 105 | python3 -c "import json,sys;d=json.load(sys.stdin);print('   assembled:',d['status'])"
 	@uv run python cli.py access unit01 bedroom 90 90 105 --carton 95 88 40 | python3 -c "import json,sys;d=json.load(sys.stdin);print('   carton   :',d['status'])"
+
+viz:
+	PYTHONPATH=. uv run python viz/render.py
 
 clean:
 	rm -rf data/chroma .pytest_cache
