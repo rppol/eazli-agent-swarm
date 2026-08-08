@@ -75,6 +75,11 @@ COFFEE_TABLE_REACH_CM = RULES["coffee_table_reach"]["value_cm"]
 # them, so a 1cm margin on paper is no margin in a stairwell.
 TIGHT_MARGIN_CM = 3.0
 
+# Anything this low is a floor covering, not an obstruction: you walk over it.
+# Without this a rug counted as blocking the walkway in front of the sofa it
+# was laid under, which made rugs unplaceable in any furnished room.
+FLOOR_COVERING_MAX_H_CM = 5.0
+
 
 # --------------------------------------------------------------------------
 # Value types
@@ -285,6 +290,7 @@ def check_fit(
             role_unknown, front_clearance_cm = True, 0.0
 
     reasons: list[str] = []
+    notes: list[str] = []
     x0, y0, x1, y1 = placement.footprint()
 
     if x0 < 0 or y0 < 0 or x1 > room.width_cm or y1 > room.depth_cm:
@@ -312,14 +318,27 @@ def check_fit(
                 f"{room.height_cm:.0f}cm. It has to be assembled standing, or arrive flat-packed."
             )
 
+    floor_covering = (placement.dims.h or 0) <= FLOOR_COVERING_MAX_H_CM
     for door in room.doors:
         if door.swing != "in":
             continue
-        if _overlaps((x0, y0, x1, y1), _swing_box(door, room)):
-            reasons.append(
-                f"{placement.item_id} blocks the {door.wall} door swing "
-                f"({door.width_cm:.0f}cm leaf). {RULES['door_swing']['text']}"
+        if not _overlaps((x0, y0, x1, y1), _swing_box(door, room)):
+            continue
+        if floor_covering:
+            # A door sweeps over a rug rather than into it — but only if the
+            # leaf is undercut enough to clear the pile, which is typically
+            # 10-20mm. Worth saying out loud rather than either failing the
+            # layout or pretending the question does not arise.
+            notes.append(
+                f"{placement.item_id} runs under the {door.wall} door swing. A door "
+                f"leaf is usually undercut 10-20mm, so check it clears the pile "
+                f"({placement.dims.h:.0f}cm here)."
             )
+            continue
+        reasons.append(
+            f"{placement.item_id} blocks the {door.wall} door swing "
+            f"({door.width_cm:.0f}cm leaf). {RULES['door_swing']['text']}"
+        )
 
     for fixture in room.fixed:
         if _overlaps((x0, y0, x1, y1), fixture.footprint()):
@@ -364,7 +383,7 @@ def check_fit(
     return Verdict(
         status="fail" if reasons else "pass",
         reasons=reasons,
-        details={"footprint": [x0, y0, x1, y1]},
+        details={"footprint": [x0, y0, x1, y1], "notes": notes},
     )
 
 
@@ -408,6 +427,8 @@ def _front_gap(
             continue
         if _is_companion(placement, other):
             continue
+        if (other.dims.h or 0) <= FLOOR_COVERING_MAX_H_CM:
+            continue   # a rug is walked on, not walked around
         ox0, oy0, ox1, oy1 = other.footprint()
 
         if placement.facing == "S" and ox1 > x0 and ox0 < x1 and oy0 >= y1:
@@ -461,6 +482,7 @@ def validate_layout(room: Room, placements: Sequence[Placement]) -> Verdict:
         )
         statuses.append("unverified")
 
+    notes: list[str] = []
     for p in placements:
         # Clearance comes from the role table, the same one check_fit uses, and
         # the rest of the layout is passed in so a walkway can be blocked by
@@ -468,6 +490,7 @@ def validate_layout(room: Room, placements: Sequence[Placement]) -> Verdict:
         v = check_fit(p, room, others=[o for o in placements if o is not p])
         statuses.append(v.status)
         reasons.extend(v.reasons)
+        notes.extend(v.details.get("notes", []))
 
     known = [p for p in placements if p.dims.known]
     for i, a in enumerate(known):
@@ -478,6 +501,10 @@ def validate_layout(room: Room, placements: Sequence[Placement]) -> Verdict:
                 # overlap by design. Reporting that as a collision rejected
                 # every realistically-placed dining set.
                 if _is_companion(a, b) and {a.resolved_role(), b.resolved_role()} & DINING_CHAIR_ROLES:
+                    continue
+                # A rug lies under the furniture standing on it. Treating that
+                # as a collision would make rugs unplaceable in a furnished room.
+                if "rug" in {a.resolved_role(), b.resolved_role()}:
                     continue
                 reasons.append(f"{a.item_id} and {b.item_id} overlap.")
                 statuses.append("fail")
@@ -551,12 +578,22 @@ def _gap_between(a: tuple, b: tuple) -> float:
 # check_access_path — can the item get to the room at all?
 # --------------------------------------------------------------------------
 
-def check_access_path(dims: Dims, segments: Sequence[PathSegment]) -> Verdict:
+def check_access_path(
+    dims: Dims,
+    segments: Sequence[PathSegment],
+    flexible: bool = False,
+) -> Verdict:
     """Walk the delivery route and test the item against each leg.
 
     This is the check eazli's Fitment clause pushes onto the user. A sofa that
     fits the living room perfectly is still a return if it cannot clear the
     hallway.
+
+    `flexible` marks goods that bend — a rolled rug, a mattress. The
+    corner-turning maths assumes a rigid rectangle, which is right for a sofa
+    and wrong for a rug: it rejected every rug in the catalogue for needing
+    300cm of swing where 275cm was available, when in practice you simply flex
+    it round. The exemption is narrow (turns only) and always said out loud.
     """
     if not dims.known:
         return _unverified(dims)
@@ -570,6 +607,12 @@ def check_access_path(dims: Dims, segments: Sequence[PathSegment]) -> Verdict:
             ok, note = _fits_in_box(dims, seg)
         elif seg.kind == "turn":
             ok, note = _can_turn(dims, seg)
+            if not ok and flexible:
+                ok = True
+                note = (
+                    f"{seg.name}: too long to swing round rigidly, but this item "
+                    f"bends — carried flexed or folded. Not verified geometry."
+                )
         else:
             ok, note = _fits_through_opening(dims, seg)
 
@@ -631,6 +674,21 @@ def _fits_in_box(dims: Dims, seg: PathSegment) -> tuple[bool, str]:
                      if margin < TIGHT_MARGIN_CM else "")
             return True, (f"{seg.name} (lift car {seg.width_cm:.0f}x{depth:.0f}x"
                           f"{seg.height_cm:.0f}cm): fits.{tight}")
+    # Nothing fits along an axis. A slender item can still go in corner to
+    # corner — which is what anyone actually does with a rug, a ladder or a
+    # curtain pole. Conservative: the long side must clear the space diagonal
+    # AND the other two must be slim next to the smallest side, so a wardrobe
+    # cannot be wedged in on a technicality.
+    longest, *rest = sorted((w, d, h), reverse=True)
+    diagonal = math.sqrt(seg.width_cm ** 2 + depth ** 2 + seg.height_cm ** 2)
+    slim = min(seg.width_cm, depth, seg.height_cm) / 4
+    if longest <= diagonal and all(v <= slim for v in rest):
+        return True, (
+            f"{seg.name} (lift car {seg.width_cm:.0f}x{depth:.0f}x{seg.height_cm:.0f}cm): "
+            f"{longest:.0f}cm does not fit along any wall, but clears the {diagonal:.0f}cm "
+            f"space diagonal — must be angled corner to corner."
+        )
+
     return False, (
         f"{seg.name} (lift car {seg.width_cm:.0f}x{depth:.0f}x{seg.height_cm:.0f}cm): item "
         f"{w:.0f}x{d:.0f}x{h:.0f}cm does not fit the car in any orientation."

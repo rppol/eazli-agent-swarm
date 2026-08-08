@@ -11,7 +11,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { hex } from './palette.js';
+import { hex, suggestionHex } from './palette.js';
 
 const CM = 0.01;
 
@@ -90,11 +90,60 @@ function toWorld(x, y, w, d, r) {
 }
 
 export function draw(plan) {
-  room = plan.room_cm;
   clear(world);
   meshes.clear();
+  if (plan.rooms) return drawFlat(plan);
+  room = plan.room_cm;
+  drawRoom(plan, new THREE.Group());
+  fitAll();
+}
 
-  const W = room.width * CM, D = room.depth * CM, H = room.height * CM;
+/** Several rooms side by side, each to scale.
+ *
+ * The plan gives room dimensions but NOT their positions relative to one
+ * another, so this is an arrangement for viewing, not a floor plate. The gap
+ * between rooms is presentation; everything inside each room is verified. */
+function drawFlat(flat) {
+  const GAP = 1.2;
+  const widths = flat.rooms.map((r) => r.room_cm.width * CM);
+  const depths = flat.rooms.map((r) => r.room_cm.depth * CM);
+  const total = widths.reduce((a, b) => a + b, 0) + GAP * (flat.rooms.length - 1);
+  const deepest = Math.max(...depths);
+  let cursor = -total / 2;
+
+  for (const [i, r] of flat.rooms.entries()) {
+    const g = new THREE.Group();
+    g.position.x = cursor + widths[i] / 2;
+    // Each room's shell is centred on its own origin, so rooms of different
+    // depths sat at different z and the row read as a staircase. Line the
+    // north walls up instead and it reads as one flat.
+    g.position.z = -deepest / 2 + depths[i] / 2;
+    cursor += widths[i] + GAP;
+    room = r.room_cm;
+    drawRoom(r, g, r.room);
+  }
+  room = { width: total / CM, depth: deepest / CM, height: 290 };
+  fitAll();
+}
+
+function fitAll() {
+  setView(lastView);
+}
+
+function drawRoom(plan, group, label) {
+  const roomCm = plan.room_cm;
+  world.add(group);
+  const saved = room;
+  room = roomCm;
+  buildShell(group, roomCm, label);
+  placeItems(group, plan.placed, roomCm);
+  drawFinishing(group, plan.finishing || [], roomCm);
+  room = saved;
+}
+
+function buildShell(target, roomCm, label) {
+
+  const W = roomCm.width * CM, D = roomCm.depth * CM, H = roomCm.height * CM;
 
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(W, D),
@@ -102,7 +151,7 @@ export function draw(plan) {
   );
   floor.rotation.x = -Math.PI / 2;
   floor.receiveShadow = true;
-  world.add(floor);
+  target.add(floor);
 
   // A GridHelper is always square, so on a 3.35 x 5.51m room it hung a metre
   // off both long sides and read as a rendering fault. Metre lines inside the
@@ -121,7 +170,7 @@ export function draw(plan) {
   const grid = new THREE.LineSegments(
     gridGeo, new THREE.LineBasicMaterial({ color: 0x9aa4b0, transparent: true, opacity: 0.35 }));
   grid.position.y = 0.004;
-  world.add(grid);
+  target.add(grid);
 
   // The entrance, so the room has an orientation and "needs tipping at the
   // flat entrance" has something to point at. Width comes from the server.
@@ -133,14 +182,14 @@ export function draw(plan) {
     );
     sweep.rotation.x = -Math.PI / 2;
     sweep.position.set(door.offset_cm * CM + leaf / 2 - W / 2, 0.006, -D / 2 + leaf / 2);
-    world.add(sweep);
+    target.add(sweep);
 
     const jamb = new THREE.Mesh(
       new THREE.BoxGeometry(leaf, 0.06, 0.05),
       new THREE.MeshBasicMaterial({ color: 0xd29922 }),
     );
     jamb.position.set(sweep.position.x, 0.03, -D / 2);
-    world.add(jamb);
+    target.add(jamb);
   }
 
   const wallMat = new THREE.MeshStandardMaterial({
@@ -148,24 +197,145 @@ export function draw(plan) {
   });
   const north = new THREE.Mesh(new THREE.PlaneGeometry(W, H), wallMat);
   north.position.set(0, H / 2, -D / 2);
-  world.add(north);
+  target.add(north);
   const west = new THREE.Mesh(new THREE.PlaneGeometry(D, H), wallMat);
   west.rotation.y = Math.PI / 2;
   west.position.set(-W / 2, H / 2, 0);
-  world.add(west);
+  target.add(west);
 
-  // Unfilled slots are deliberately NOT drawn. The planner never computes a
-  // position for something it could not place, so a marker on the floor would
-  // assert a location that does not exist.
-  for (const item of plan.placed) {
+  if (label) target.add(roomLabel(label, W, D));
+}
+
+/** A floating name so a row of rooms can be told apart. */
+function roomLabel(text, W, D) {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 96;
+  const g = c.getContext('2d');
+  g.fillStyle = '#e6edf3';
+  g.font = '600 46px ui-sans-serif, system-ui, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text.replace(/_/g, ' '), 256, 48);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(c), transparent: true, depthTest: false }));
+  sprite.scale.set(1.8, 0.34, 1);
+  sprite.position.set(0, 0.12, D / 2 + 0.45);
+  return sprite;
+}
+
+function placeItems(target, placed, roomCm) {
+  // The planner never computes a position for something it could not place, so
+  // a marker on the floor would assert a location that does not exist.
+  for (const item of placed) {
     const { w, d, h } = item.dims_cm;
-    const group = furniture(item.role, w * CM, d * CM, h * CM, colourFor(item.role));
-    const { x, z } = toWorld(item.x, item.y, w, d, room);
+    // The product's own colour when the listing named one, the role's
+    // otherwise. Without this a black leather sofa and a greige bouclé sofa
+    // drew identically, so changing style changed the plan but never the
+    // picture.
+    const colour = item.colour_hex
+      ? parseInt(item.colour_hex.slice(1), 16)
+      : colourFor(item.role);
+    const group = furniture(item.role, w * CM, d * CM, h * CM, colour);
+    const { x, z } = toWorld(item.x, item.y, w, d, roomCm);
     group.position.set(x, 0, z);
     group.userData.slot = item.slot_id;
-    world.add(group);
+    target.add(group);
     meshes.set(item.slot_id, group);
   }
+}
+
+// ------------------------------------------------------------- finishing
+//
+// Suggestions, not purchases. They are drawn as translucent outlines so the
+// room reads as finished without any chance of mistaking them for something
+// the engine sourced and verified — nothing here has a price, an ASIN or a
+// delivery check, and the panel says so in words as well.
+
+const GHOST = suggestionHex;
+
+function ghostMaterial(opacity) {
+  return new THREE.MeshStandardMaterial({
+    color: GHOST, transparent: true, opacity, roughness: 0.6,
+    emissive: GHOST, emissiveIntensity: 0.25,
+  });
+}
+
+function drawFinishing(target, suggestions, roomCm) {
+  const W = roomCm.width * CM, D = roomCm.depth * CM;
+  for (const s of suggestions) {
+    if (s.wall) {
+      // Hung flat against the wall, centred at the stated eye level.
+      const w = s.width_cm * CM, h = s.height_cm * CM;
+      const y = s.centre_height_cm * CM;
+      const along = (s.offset_cm + s.width_cm / 2) * CM;
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.03),
+                                   ghostMaterial(0.55));
+      const edge = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, 0.03)),
+        new THREE.LineBasicMaterial({ color: GHOST, transparent: true, opacity: 0.9 }));
+      const holder = new THREE.Group();
+      holder.add(panel, edge);
+      if (s.wall === 'N')      holder.position.set(-W / 2 + along, y, -D / 2 + 0.03);
+      else if (s.wall === 'S') holder.position.set(-W / 2 + along, y,  D / 2 - 0.03);
+      else if (s.wall === 'W') { holder.position.set(-W / 2 + 0.03, y, -D / 2 + along);
+                                 holder.rotation.y = Math.PI / 2; }
+      else                     { holder.position.set( W / 2 - 0.03, y, -D / 2 + along);
+                                 holder.rotation.y = -Math.PI / 2; }
+      target.add(holder);
+    } else if (s.at_cm) {
+      const g = floorGlyph(s.glyph, s.width_cm * CM, s.height_cm * CM);
+      g.position.set(-W / 2 + s.at_cm[0] * CM, 0, -D / 2 + s.at_cm[1] * CM);
+      target.add(g);
+    }
+  }
+}
+
+/** A floor suggestion, drawn as whichever glyph Python asked for.
+ *
+ * One tapered cylinder served for everything and read as a traffic cone; worse,
+ * an arc lamp was drawn as a potted plant. The kinds are visually distinct now
+ * so the outline says what it stands for without needing the panel. */
+function floorGlyph(glyph, w, h) {
+  const g = new THREE.Group();
+  if (glyph === 'lamp') {
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.34, w * 0.38, h * 0.03, 20),
+                                ghostMaterial(0.6));
+    base.position.y = h * 0.015;
+    const arc = new THREE.Mesh(new THREE.TorusGeometry(h * 0.42, w * 0.035, 8, 24, Math.PI / 2),
+                               ghostMaterial(0.6));
+    arc.position.y = h * 0.03;
+    arc.rotation.z = -Math.PI / 2;
+    const shade = new THREE.Mesh(new THREE.ConeGeometry(w * 0.32, h * 0.16, 18, 1, true),
+                                 ghostMaterial(0.45));
+    shade.position.set(h * 0.42, h * 0.42, 0);
+    g.add(base, arc, shade);
+  } else if (glyph === 'vessel') {
+    const body = new THREE.Mesh(new THREE.LatheGeometry(
+      Array.from({ length: 12 }, (_, i) => {
+        const u = i / 11;
+        return new THREE.Vector2(w * (0.16 + 0.32 * Math.sin(u * Math.PI * 0.92)), u * h);
+      }), 20), ghostMaterial(0.5));
+    g.add(body);
+  } else if (glyph === 'form') {
+    const a = new THREE.Mesh(new THREE.BoxGeometry(w * 0.7, h * 0.55, w * 0.7),
+                             ghostMaterial(0.42));
+    a.position.y = h * 0.275;
+    a.rotation.y = Math.PI / 7;
+    const b = new THREE.Mesh(new THREE.SphereGeometry(w * 0.3, 16, 12), ghostMaterial(0.5));
+    b.position.y = h * 0.62;
+    g.add(a, b);
+  } else {
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.3, w * 0.22, h * 0.2, 18),
+                               ghostMaterial(0.6));
+    pot.position.y = h * 0.1;
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.045, w * 0.06, h * 0.34, 8),
+                                 ghostMaterial(0.65));
+    trunk.position.y = h * 0.37;
+    const canopy = new THREE.Mesh(new THREE.SphereGeometry(w * 0.5, 18, 14), ghostMaterial(0.32));
+    canopy.scale.set(1, 0.82, 1);
+    canopy.position.y = h * 0.72;
+    g.add(pot, trunk, canopy);
+  }
+  return g;
 }
 
 // --------------------------------------------------------------- furniture
@@ -259,6 +429,9 @@ function furniture(role, w, d, h, colour) {
     for (const s of [-1, 1]) {
       g.add(at(slab(0.02, d * 0.04, h * 0.1, metal), s * w * 0.06, h * 0.52, d / 2)); // handles
     }
+  } else if (role === 'rug') {
+    g.add(at(slab(w, d, Math.max(h, 0.012), soft), 0, Math.max(h, 0.012) / 2, 0));
+    g.add(at(slab(w * 0.9, d * 0.86, 0.002, dark), 0, Math.max(h, 0.012) + 0.001, 0)); // border
   } else {
     g.add(at(slab(w, d, h, body), 0, h / 2, 0));
   }
@@ -291,8 +464,11 @@ const VIEWS = {
   eye: (r) => ({ p: [0, 1.55, r.depth * CM * 0.52], t: [0, 1.15, -r.depth * CM * 0.3] }),
 };
 
+let lastView = 'iso';
+
 export function setView(name) {
   if (!room) return;
+  lastView = name;
   const { p, t } = VIEWS[name](room);
   camera.position.set(...p);
   controls.target.set(...t);

@@ -296,3 +296,46 @@ code { font: 11px var(--mono); background: var(--panel-2); padding: 1px 4px; bor
   position: absolute; inset: 0; margin: 0; display: grid; place-content: center;
   text-align: center; padding: 24px; color: var(--muted); font-size: 13px; line-height: 1.6;
 }
+
+.across { color: var(--muted); font-family: ui-sans-serif, system-ui, sans-serif; }
+
+/* ---- finishing suggestions ------------------------------------------- */
+/* Deliberately styled apart from the sourced items above: amber rather than
+   the plan's blue, so a suggestion is never read as something that was
+   costed, fit-checked and routed through the lift. */
+/* The panel has no padding of its own; every block inside it supplies the
+   same 14 px gutter (.item, #issues). Without a right gutter the suggestion
+   text ran flush to the window edge while the items above it did not. */
+#finishing { border-top: 1px solid var(--line); }
+#finish { margin: 0; padding: 12px 14px; }
+#finish > summary {
+  cursor: pointer; font-size: 12px; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--warn); padding: 2px 0 6px;
+  display: flex; align-items: center; gap: 8px;
+}
+#finish > summary::-webkit-details-marker { display: none; }
+.muted { color: var(--muted); }
+.small { font-size: 11px; line-height: 1.6; }
+p.muted.small { margin: 4px 0 10px; }
+.pill {
+  font: 600 10px/1.6 var(--mono); padding: 1px 7px; border-radius: 999px;
+  letter-spacing: 0; text-transform: none; margin-left: auto;
+  white-space: nowrap; flex: none;
+}
+.finish-row {
+  border-left: 2px solid color-mix(in srgb, var(--warn) 50%, transparent);
+  padding: 6px 0 6px 10px; margin: 12px 0 0;
+}
+.finish-row:last-child { margin-bottom: 2px; }
+.finish-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.finish-head strong { font-size: 13px; }
+.finish-head .dims { margin-left: auto; font: 11px/1.5 var(--mono);
+                     font-variant-numeric: tabular-nums; color: var(--warn);
+                     white-space: nowrap; }
+.rule-line { opacity: .65; font-style: italic; }
+.warn-line { color: var(--warn); }
+.warn-line a { color: var(--warn); }
+.ok-line { color: var(--good); }
+.pill.warn { background: color-mix(in srgb, var(--warn) 15%, transparent);
+             color: var(--warn);
+             border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }

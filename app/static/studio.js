@@ -38,13 +38,37 @@ const CATEGORY_FOR_ROLE = {
 // ---------------------------------------------------------------- rendering the plan
 
 function render(plan) {
+  // A flat is several validated rooms; a room is one. Flatten for the panel so
+  // everything downstream keeps working on a single list of placed items.
+  if (plan.rooms) {
+    plan = {
+      ...plan,
+      room: 'whole flat',
+      room_cm: plan.rooms[0].room_cm,
+      placed: plan.rooms.flatMap((r) =>
+        r.placed.map((i) => ({ ...i, slot_id: `${r.room}: ${i.slot_id}` }))),
+      unfilled: plan.rooms.flatMap((r) =>
+        r.unfilled.map((u) => ({ ...u, slot_id: `${r.room}: ${u.slot_id}` }))),
+      validation: {
+        status: plan.rooms.every((r) => r.validation.status === 'pass') ? 'pass'
+              : plan.rooms.some((r) => r.validation.status === 'fail') ? 'fail' : 'unverified',
+        reasons: plan.rooms.flatMap((r) =>
+          r.validation.reasons.map((text) =>
+            `${r.room.replace(/_/g, ' ')} — ${humaniseWithin(text, r.placed)}`)),
+        notes: plan.rooms.flatMap((r) =>
+          (r.validation.notes || []).map((text) =>
+            `${r.room.replace(/_/g, ' ')} — ${humaniseWithin(text, r.placed)}`)),
+      },
+      _flat: plan,
+    };
+  }
   state.plan = plan;
   state.room = plan.room_cm;
   // Text first, always. The room follows whenever three.js has landed.
   paintVerdict(plan.validation, plan.total_sar, plan.budget_sar);
   paintHow(plan);
   paintPanel(plan);
-  viewerReady.then((v) => { if (v) { v.draw(plan); v.setView(state.view); } });
+  viewerReady.then((v) => { if (v) { v.draw(plan._flat ?? plan); v.setView(state.view); } });
 }
 
 function paintHow(plan) {
@@ -68,6 +92,7 @@ function paintHow(plan) {
     the space of arrangements the engine already accepts, so a plan that could not
     be verified was never a candidate. Open <b>Why this?</b> on any item for the
     per-slot reasoning.</p>
+    ${plan._flat ? `<p class="how-note"><b>Whole flat:</b> ${esc(plan._flat.layout_note)}</p>` : ''}
     ${(state.assumptions || []).length ? `
       <details class="assumed">
         <summary>${state.assumptions.length} things assumed, not measured</summary>
@@ -81,14 +106,16 @@ function paintVerdict(validation, total, budget) {
   v.textContent = validation.status;
   const m = $('#money');
   m.classList.toggle('over', total > budget);
-  m.innerHTML = `<b>${money(total)}</b> / ${money(budget)} SAR`;
+  const rooms = state.plan?._flat?.rooms?.length;
+  m.innerHTML = `<b>${money(total)}</b> / ${money(budget)} SAR`
+    + (rooms ? ` <span class="across">shared across ${rooms} rooms</span>` : '');
 
   // A red badge whose explanation sits five product cards further down is not
   // an explanation. Put the first reason beside the verdict and scroll the
   // panel back to it, so a failed swap says why without the user hunting.
   const why = $('#verdict-why');
   const first = (validation.reasons || [])[0];
-  why.textContent = first ? humanise(first) : '';
+  why.textContent = first ? (state.plan?._flat ? first : humanise(first)) : '';
   why.hidden = validation.status === 'pass' || !first;
   if (validation.status !== 'pass') $('#panel').scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -141,11 +168,12 @@ function paintPanel(plan) {
   $('#items').innerHTML = plan.placed.map((i) => `
     <div class="item" data-slot="${i.slot_id}" data-role="${i.role}">
       <div class="item-head">
-        <span class="swatch" style="background:${PALETTE[i.role] ?? PALETTE.other}"></span>
+        <span class="swatch" style="background:${i.colour_hex ?? PALETTE[i.role] ?? PALETTE.other}"></span>
         <div class="item-main">
           <div class="slot">${i.slot_id.replace(/_/g, ' ')}</div>
           <div class="name">${esc(i.title)}</div>
-          <div class="meta">${i.dims_cm.w}\u00d7${i.dims_cm.d}\u00d7${i.dims_cm.h} cm
+          <div class="meta">${i.dims_cm.w}\u00d7${i.dims_cm.d}\u00d7${i.dims_cm.h} cm${
+            i.material ? ` \u00b7 ${esc(i.material)}` : ''}
             \u00b7 <span title="How the dimensions were obtained from the listing">${i.dims_confidence}</span></div>
           ${accessBadges(i.access)}
         </div>
@@ -171,11 +199,16 @@ function paintPanel(plan) {
     </div>`).join('');
 
   const reasons = plan.validation.reasons || [];
+  const notes = [...new Set(plan.validation.notes || [])];
+  const advisories = notes
+    .map((n) => `<div class="issue note">${esc(plan._flat ? n : humanise(n))}</div>`).join('');
+  renderFinishing(plan);
   $('#issues').innerHTML = reasons.length
-    ? reasons.map((r) => `<div class="issue">${esc(humanise(r))}</div>`).join('')
-    : `<div class="issue note">Every clearance, door swing, walkway, reach and
-        delivery route was checked by <code>app/geometry.py</code>. Nothing here
-        was decided by a language model.</div>`;
+    ? reasons.map((r) => `<div class="issue">${esc(plan._flat ? r : humanise(r))}</div>`).join('')
+      + advisories
+    : advisories + `<div class="issue note">Every clearance, door swing, walkway,
+        reach and delivery route was checked by <code>app/geometry.py</code>.
+        Nothing here was decided by a language model.</div>`;
 
   $('#items').querySelectorAll('.why').forEach((b) => {
     b.onclick = () => {
@@ -210,13 +243,18 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
 /** Reasons come back naming items by the id they were sent with — an ASIN.
  *  "Only 35cm between B0FR3WVLTS and B0H8PQ9KDJ" is precise and unreadable.
  *  Swap the codes for the slot names a person can actually see on screen. */
-function humanise(text) {
+function humaniseWithin(text, items) {
   let out = String(text);
-  for (const item of state.plan?.placed ?? []) {
-    if (!item.asin) continue;
-    out = out.replaceAll(item.asin, `the ${item.slot_id.replace(/_/g, ' ')}`);
+  for (const item of items ?? []) {
+    if (item.asin) out = out.replaceAll(item.asin, `the ${item.slot_id.replace(/_/g, ' ')}`);
+    // Reasons also name items by slot_id, which is only unique inside a room.
+    out = out.replaceAll(item.slot_id, item.slot_id.replace(/_/g, ' '));
   }
   return out;
+}
+
+function humanise(text) {
+  return humaniseWithin(text, state.plan?.placed ?? []);
 }
 
 // ---------------------------------------------------------------- swapping
@@ -355,6 +393,15 @@ async function staticApi(path, body) {
     }
   }
 
+  if (path === '/plan/flat') {
+    try {
+      return structuredClone(await json(
+        `./data/flats/${planKey(body.unit, 'flat', state.style)}.json`));
+    } catch {
+      throw new Error('This build has no precomputed whole-flat plan for that unit.');
+    }
+  }
+
   if (path === '/plan/auto') {
     try {
       return structuredClone(await json(
@@ -391,10 +438,12 @@ async function runPlan() {
   try {
     const style = $('#style').value ? $('#style').value.split(',') : [];
     state.style = style;
-    const plan = await api('/plan/auto', {
-      unit: $('#unit').value, room: $('#room').value,
-      budget_sar: Number($('#budget').value), style,
-    });
+    const room = $('#room').value;
+    const body = { unit: $('#unit').value, room,
+                   budget_sar: Number($('#budget').value), style };
+    const plan = room === '__flat__'
+      ? await api('/plan/flat', { ...body, room: 'whole flat' })
+      : await api('/plan/auto', body);
     render(plan);
   } catch (err) {
     // Leaving the previous verdict on screen would claim the plan shown is
@@ -424,8 +473,9 @@ async function boot() {
   const fillRooms = () => {
     const unit = units.find((u) => u.id === unitSel.value);
     const rooms = unit.rooms.filter((r) => PLANNABLE.has(r));
-    roomSel.innerHTML = rooms.map((r) =>
-      `<option value="${r}">${r.replace(/_/g, ' ')}</option>`).join('');
+    roomSel.innerHTML = '<option value="__flat__">whole flat</option>'
+      + rooms.map((r) => `<option value="${r}">${r.replace(/_/g, ' ')}</option>`).join('');
+    roomSel.value = rooms.includes('living_dining') ? 'living_dining' : rooms[0];
   };
   unitSel.onchange = () => { fillRooms(); runPlan(); };
   fillRooms();
@@ -450,3 +500,65 @@ async function boot() {
 }
 
 boot();
+
+
+/* ------------------------------------------------------------- finishing
+ *
+ * The gap between "this room passes every rule" and "this room looks
+ * finished". The engine measures what is left over — bare wall, empty floor —
+ * and sizes a piece for it from a stated rule.
+ *
+ * Every one of these says, out loud, that the catalogue cannot supply it. The
+ * amazon.sa capture is furniture: no art, no plants, no mirrors. Inventing a
+ * product to fill the hole would be the exact failure this project exists to
+ * avoid, so the honest output is a measurement plus the search that would find
+ * the object. For a shopping product that gap IS the finding.
+ */
+function renderFinishing(plan) {
+  const host = $('#finishing');
+  if (!host) return;
+  const picks = plan._flat
+    ? plan.rooms.flatMap((r) => (r.finishing || [])
+        .map((s) => ({ ...s, room: r.room.replace(/_/g, ' ') })))
+    : (plan.finishing || []);
+  if (!picks.length) { host.innerHTML = ''; return; }
+
+  const missing = picks.filter((s) => !s.in_catalogue).length;
+  host.innerHTML = `
+    <details id="finish" open>
+      <summary>Finishing the room — ${picks.length} suggestion${picks.length > 1 ? 's' : ''}
+        <span class="pill warn">${missing} not stocked</span></summary>
+      <p class="muted small">Measured from the wall and floor this layout leaves
+        empty, sized by a stated design rule, and drawn as a translucent outline
+        in the render. Nothing here is sourced — the captured amazon.sa
+        assortment has no art, plants or mirrors, so these are specifications to
+        shop against, not products.</p>
+      ${picks.map(finishRow).join('')}
+    </details>`;
+}
+
+function finishRow(s) {
+  const where = s.wall
+    ? `${s.wall} wall, centred ${s.centre_height_cm} cm above the floor`
+    : 'standing on open floor';
+  const size = s.wall
+    ? `${Math.round(s.width_cm)} × ${Math.round(s.height_cm)} cm`
+    : `⌀${Math.round(s.width_cm)} × ${Math.round(s.height_cm)} cm tall`;
+  const query = encodeURIComponent(s.search_query);
+  return `
+    <div class="finish-row">
+      <div class="finish-head">
+        <strong>${esc(s.label)}</strong>
+        ${s.room ? `<span class="muted small">${esc(s.room)}</span>` : ''}
+        <span class="dims">${size}</span>
+      </div>
+      <div class="muted small">${esc(where)} — ${esc(s.because)}</div>
+      <div class="muted small rule-line">rule: ${esc(s.rule)}</div>
+      ${s.in_catalogue
+        ? '<div class="small ok-line">the catalogue stocks this category</div>'
+        : `<div class="small warn-line">not in the captured catalogue —
+             <a target="_blank" rel="noopener"
+                href="https://www.amazon.sa/s?k=${query}">search amazon.sa for
+                “${esc(s.search_query)}”</a></div>`}
+    </div>`;
+}

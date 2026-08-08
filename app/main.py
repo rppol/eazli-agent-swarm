@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from app import store
 from app.catalog import parse_capture
-from app.planner import auto_plan, swap
+from app.planner import auto_plan, plan_flat, swap
 from app.geometry import (
     Dims,
     Placement,
@@ -296,7 +296,8 @@ def layout_validate(req: LayoutRequest) -> dict:
         for p in req.placements
     ]
     verdict = validate_layout(spec.to_room(), placements)
-    return {"status": verdict.status, "reasons": verdict.reasons}
+    return {"status": verdict.status, "reasons": verdict.reasons,
+            "notes": verdict.details.get("notes", [])}
 
 
 @app.post("/access/check", tags=["spatial"])
@@ -390,6 +391,17 @@ def plan_auto(req: PlanRequest) -> dict:
     so the studio never renders a layout the engine has not accepted.
     """
     return auto_plan(req.unit, req.room, req.budget_sar, req.style).to_dict()
+
+
+@app.post("/plan/flat", tags=["studio"])
+def plan_whole_flat(req: PlanRequest) -> dict:
+    """Plan every plannable room in a flat against one shared budget.
+
+    Rooms are returned separately and to scale. The surveyed plan gives room
+    sizes but not their positions relative to one another, so assembling them
+    into a floor plate would mean inventing coordinates.
+    """
+    return plan_flat(req.unit, req.budget_sar, req.style)
 
 
 @app.post("/plan/swap", tags=["studio"])

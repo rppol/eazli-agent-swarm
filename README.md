@@ -118,6 +118,16 @@ substring-matching item ids, so passing ASINs silently skipped the seating and
 sofa-to-table checks and returned `pass` on a broken layout. A sourcing agent found it by
 using the system. Now an undeterminable role makes the layout `unverified`.
 
+**The catalogue can furnish a room but cannot finish one.** After a layout passes, a
+second geometric pass (`app/styling.py`) measures what is left over — the free wall runs
+at hanging height, the empty floor pockets — and sizes a finishing piece for each from a
+stated rule: hang the centre at 145 cm, span 60–75% of the furniture below, leave 75 cm
+of passage. It then says, per suggestion, that the captured assortment has **no art, no
+plants, no mirrors** and gives the search that would find one. The tempting version of
+this feature asks a model to name a painting; that invents a product at a size nobody
+measured. Naming the assortment gap is the more useful answer, and for a shopping
+product it is the actual finding.
+
 **Assumptions are surfaced, not buried.** The floor plan dimensions rooms but not ceiling
 heights, door leaves or lift car heights. Those are marked `assumed` and reported
 wherever a verdict depends on one.

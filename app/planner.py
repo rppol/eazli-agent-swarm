@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 
 from app.catalog import Product, parse_capture
+from app import styling
 from app.geometry import (
     Dims,
     Placement,
@@ -44,6 +45,9 @@ RECIPES: dict[str, list[dict]] = {
          "facings": ["S"], "priority": 4, "required": False},
         {"slot_id": "accent_lighting", "role": "floor_lamp", "category": "floor_lamp",
          "facings": ["N"], "priority": 5, "required": False},
+        # Last, because it goes under whatever is already there.
+        {"slot_id": "floor_covering", "role": "rug", "category": "rug",
+         "facings": ["N"], "priority": 6, "required": False},
     ],
     "bedroom": [
         {"slot_id": "bed", "role": "bed", "category": "bed",
@@ -52,6 +56,8 @@ RECIPES: dict[str, list[dict]] = {
          "facings": ["S"], "priority": 2, "required": False},
         {"slot_id": "reading_light", "role": "floor_lamp", "category": "floor_lamp",
          "facings": ["S"], "priority": 3, "required": False},
+        {"slot_id": "floor_covering", "role": "rug", "category": "rug",
+         "facings": ["S"], "priority": 4, "required": False},
     ],
 }
 RECIPES["master_bedroom"] = RECIPES["bedroom"]
@@ -92,6 +98,8 @@ class PlacedItem:
     facing: str
     access: dict
     flat_pack: bool
+    colour_hex: str | None
+    material: str | None
     decision: Decision
 
 
@@ -114,6 +122,7 @@ class Plan:
     total_sar: float = 0.0
     budget_sar: float = 0.0
     validation: dict = field(default_factory=dict)
+    finishing: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -126,6 +135,7 @@ class Plan:
             "budget_sar": self.budget_sar,
             "within_budget": self.total_sar <= self.budget_sar,
             "validation": self.validation,
+            "finishing": self.finishing,
         }
 
 
@@ -256,8 +266,19 @@ def auto_plan(
         for product in pool:
             # Deliverability is a property of the product, not the position, so
             # it is checked once per candidate rather than once per placement.
-            carton = product.carton or product.dims
-            access = check_access_path(carton, route)
+            #
+            # A rug is the one thing here that is not rigid: it ships rolled, so
+            # judging a 3m rug against a 2.18m lift car rejects every rug in the
+            # catalogue. None of them publish a carton size, so the rolled form
+            # is INFERRED —the long side, about 30cm across — and the plan says
+            # so rather than presenting it as measured.
+            if product.category == "rug" and product.carton is None and product.dims.known:
+                longest = max(product.dims.w, product.dims.d)
+                carton = Dims(w=longest, d=30.0, h=30.0, confidence="inferred")
+            else:
+                carton = product.carton or product.dims
+            access = check_access_path(
+                carton, route, flexible=product.category == "rug")
             if access.status == "fail":
                 blocker = next(
                     (r for r in access.reasons
@@ -315,9 +336,17 @@ def auto_plan(
                 dims_cm={"w": product.dims.w, "d": product.dims.d, "h": product.dims.h},
                 dims_confidence=product.dims_confidence,
                 x=trial.x, y=trial.y, facing=trial.facing,
-                access={"status": access.status, "reasons": access.reasons,
-                        "measured_using": "carton" if product.carton else "assembled"},
+                access={
+                    "status": access.status, "reasons": access.reasons,
+                    "measured_using": (
+                        "carton" if product.carton
+                        else "rolled (inferred)" if product.category == "rug"
+                        else "assembled"
+                    ),
+                },
                 flat_pack=product.flat_pack,
+                colour_hex=product.colour_hex,
+                material=product.material,
                 decision=Decision(
                     considered=len(pool),
                     ranked_above=[
@@ -346,7 +375,12 @@ def auto_plan(
             ))
 
     final = validate_layout(room, placed)
-    plan.validation = {"status": final.status, "reasons": final.reasons}
+    plan.validation = {"status": final.status, "reasons": final.reasons,
+                       "notes": final.details.get("notes", [])}
+    # What the room still lacks once it passes. Measured from the free wall and
+    # floor the layout leaves behind, not sourced — the capture has no decor.
+    plan.finishing = [styling.to_dict(s)
+                      for s in styling.suggest_finishing(room, placed, style or [])]
     return plan
 
 
@@ -380,7 +414,8 @@ def swap(
         access[p["asin"]] = {"status": a.status, "reasons": a.reasons}
 
     return {
-        "validation": {"status": verdict.status, "reasons": verdict.reasons},
+        "validation": {"status": verdict.status, "reasons": verdict.reasons,
+                       "notes": verdict.details.get("notes", [])},
         "access": access,
         "total_sar": round(sum(p.get("price_sar", 0) for p in placements), 2),
     }
@@ -393,3 +428,61 @@ CATEGORY_FOR_ROLE_FALLBACK = {
     slot["role"]: slot["category"]
     for recipe in RECIPES.values() for slot in recipe
 }
+
+
+# --------------------------------------------------------------------------
+# whole-flat planning
+# --------------------------------------------------------------------------
+
+def plan_flat(
+    unit: str,
+    budget_sar: float = 20000.0,
+    style: list[str] | None = None,
+) -> dict:
+    """Plan every plannable room in a flat, sharing one budget.
+
+    Budget is split by floor area, which is crude but defensible: a 335x551
+    living room has real claim to more of the money than a 335x305 bedroom.
+    Each room is then planned and validated independently — the engine has no
+    concept of a flat, only of rooms, and inventing cross-room constraints it
+    cannot check would be worse than not having them.
+
+    **Rooms are NOT assembled into a floor plate.** The surveyed plan gives room
+    dimensions but not their positions relative to one another, and placing them
+    would mean inventing coordinates. They are returned as separate to-scale
+    rooms, and the studio lays them out for viewing with that stated.
+    """
+    home = load_home()
+    unit_obj = home.unit(unit)
+    rooms = [r for r in unit_obj.rooms if r.name in RECIPES]
+    if not rooms:
+        return {"unit": unit, "rooms": [], "total_sar": 0.0, "budget_sar": budget_sar}
+
+    areas = {r.name: r.width_cm * r.depth_cm for r in rooms}
+    total_area = sum(areas.values())
+
+    plans, spent = [], 0.0
+    for room in rooms:
+        share = budget_sar * areas[room.name] / total_area
+        plan = auto_plan(unit, room.name, share, style).to_dict()
+        plan["area_share_sar"] = round(share, 2)
+        spent += plan["total_sar"]
+        plans.append(plan)
+
+    return {
+        "unit": unit,
+        "label": unit_obj.label,
+        "rooms": plans,
+        "total_sar": round(spent, 2),
+        "budget_sar": budget_sar,
+        "within_budget": spent <= budget_sar,
+        "placed": sum(len(p["placed"]) for p in plans),
+        "unfilled": sum(len(p["unfilled"]) for p in plans),
+        "positions_surveyed": False,
+        "layout_note": (
+            "The floor plan dimensions each room but does not give their positions "
+            "relative to one another, so these are shown side by side to scale "
+            "rather than assembled into a floor. Every room's own layout is "
+            "verified; the spacing between rooms is presentation only."
+        ),
+    }

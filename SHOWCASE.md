@@ -176,6 +176,41 @@ None of that is visible from a product listing.
 
 ---
 
+## The finding the demo didn't set out to make
+
+Once the layouts passed, they still looked bare — which is the honest state of a room
+holding a sofa, a table and a rug. The obvious fix is to ask a model for a painting. It
+would name one instantly, at a size nobody measured, on a wall that might have a door in
+it. That is the exact failure mode the rest of this project exists to refuse, so
+finishing became geometry as well.
+
+`app/styling.py` runs after validation and measures the leftovers:
+
+* **Free wall runs.** A wardrobe removes the wall behind it; a sofa does not — 85 cm of
+  sofa under a 145 cm hanging line is the *reason* to hang something there, so it comes
+  back as the run's anchor. Doors and windows are subtracted outright.
+* **Free floor pockets.** A largest-rectangle scan over a 10 cm grid, gated so a room
+  that cannot give up 60 cm without dropping under a 75 cm walkway is offered nothing.
+* **Sizing from a stated rule.** Centre at 145 cm, span 60–75% of the piece below. A
+  214 cm sofa gets a 144 cm work; a 170 cm sofa gets 115 cm. The number moves with the
+  room, which is why the four style presets produce visibly different walls.
+
+Then the part that matters:
+
+> **Every suggestion reports `in_catalogue: false`.**
+
+Across 75 captured amazon.sa listings there is no wall art, no plant, no mirror. The
+`accessory` category is three TV mounts, three table runners and a monitor lamp — none
+with usable dimensions. So the output is a specification and a search query, not a
+product.
+
+That is a finding about the assortment, not a limitation of the demo. **A catalogue that
+can furnish a room but cannot finish one will lose the second half of the basket** — and
+"~19% higher AOV through smart bundles" is on eazli's own vendor page. The system can
+only say so because it refused to invent the painting.
+
+---
+
 ## Where the agents disagreed
 
 This is the part worth reading. Three reviewers ran against the system and they

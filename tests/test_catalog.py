@@ -277,3 +277,52 @@ def test_a_real_package_dimension_still_becomes_the_carton():
                            "Package Dimensions": "120 x 40 x 18 cm; 30 kg"}))
     assert p.carton is not None
     assert max(p.carton.w, p.carton.d, p.carton.h) == 120
+
+
+# --------------------------------------------------------------------------
+# appearance, read from the seller's own words
+# --------------------------------------------------------------------------
+
+def test_colour_comes_from_the_title():
+    assert parse_item(item(title="Interwood Astor Sofa – Black Air Leather")).colour_hex == "#2b2f36"
+    assert parse_item(item(title="Interwood Anniston Sofa – Green Linen")).colour_hex == "#4b7f5c"
+
+
+def test_upholstery_colour_beats_the_leg_timber():
+    """"Premium Grey Linen Fabric, Beech Legs" is a grey sofa, not a beech one.
+    Wood tones used to match first and painted it beech."""
+    p = parse_item(item(title="Interwood Kissel 3 Seater Sofa – Premium Grey Linen Fabric, Beech Legs"))
+    assert p.colour_hex == "#98a0aa"
+
+
+def test_timber_is_the_colour_when_nothing_else_is_named():
+    p = parse_item(item(cat="dining_table", title="Tribesigns Solid Walnut Dining Table"))
+    assert p.colour_hex == "#7b5334"
+
+
+def test_compound_shades_beat_the_plain_word_inside_them():
+    assert parse_item(item(title="Cooper Velvet Sofa – Rose Hip")).colour_hex == "#b5687a"
+
+
+def test_material_is_extracted_too():
+    assert parse_item(item(title="Kent Bouclé Sofa – Greige")).material == "boucle"
+    assert parse_item(item(title="Astor Sofa Black Air Leather")).material == "leather"
+
+
+def test_a_title_with_no_colour_word_says_so_rather_than_guessing():
+    p = parse_item(item(title="Three Seater Sofa W190 x D85 x H85 cm - MS_ID_3PSF_00060"))
+    assert p.colour_hex is None and p.material is None
+
+
+def test_colour_words_match_whole_words_only():
+    """A substring test made "TV Stand", "Stain Resistant" and "Rectangular"
+    all match "tan", so half the catalogue rendered the same shade."""
+    for title in ("Modern TV Stand for TV up to 55 Inch",
+                  "Ultra-Thin Washable Rug, Stain Resistant Anti Slip",
+                  "Kitchen Dining Table Marble Tabletop: Rectangular 120cm"):
+        p = parse_item(item(title=title))
+        assert p.colour_hex != "#b6875a", f"{title!r} wrongly matched 'tan'"
+
+
+def test_a_genuinely_tan_item_still_matches():
+    assert parse_item(item(title="Tan Leather Armchair")).colour_hex == "#b6875a"

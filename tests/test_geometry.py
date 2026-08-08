@@ -391,3 +391,69 @@ def test_a_comfortable_clearance_is_not_flagged_as_tight():
     )
     assert verdict.status == "pass"
     assert not any("tight" in r.lower() for r in verdict.reasons)
+
+
+def test_a_rug_does_not_block_the_walkway_it_lies_in():
+    """You walk on a rug. It was counted as an obstruction in front of the sofa
+    it was laid under, which made rugs unplaceable in any furnished room."""
+    placements = [
+        Placement("sofa", SMALL_SOFA, x=5, y=205, facing="N", role="sofa"),
+        Placement("rug", Dims(w=300, d=200, h=2), x=15, y=20, role="rug"),
+    ]
+    assert validate_layout(LIVING, placements).status == "pass"
+
+
+def test_something_tall_in_the_same_place_still_blocks():
+    """The rule is about height, not about being called a rug."""
+    placements = [
+        Placement("sofa", SMALL_SOFA, x=5, y=205, facing="N", role="sofa"),
+        Placement("bookshelf", Dims(w=300, d=200, h=180), x=15, y=20, role="bookshelf"),
+    ]
+    assert validate_layout(LIVING, placements).status == "fail"
+
+
+def test_a_rug_may_lie_under_the_furniture_standing_on_it():
+    placements = [
+        Placement("sofa", SMALL_SOFA, x=40, y=200, facing="N", role="sofa"),
+        Placement("rug", Dims(w=300, d=200, h=2), x=20, y=150, role="rug"),
+    ]
+    v = validate_layout(LIVING, placements)
+    assert not any("overlap" in r.lower() for r in v.reasons)
+
+
+def test_a_long_thin_item_can_go_diagonally_into_a_lift_car():
+    """A 3m rolled rug does not fit a 218x208x220cm car along any axis, but the
+    car's space diagonal is 373cm — you stand it corner to corner, which is what
+    anyone actually does with a rug or a ladder."""
+    car = PathSegment("lift", kind="lift", width_cm=218, height_cm=220, depth_cm=208)
+    verdict = check_access_path(Dims(w=300, d=30, h=30), [car])
+    assert verdict.status == "pass"
+    assert any("angled" in r.lower() or "diagonal" in r.lower() for r in verdict.reasons)
+
+
+def test_a_bulky_item_still_cannot_be_wedged_in_diagonally():
+    """The diagonal only helps something slender. A wardrobe is not slender."""
+    car = PathSegment("lift", kind="lift", width_cm=218, height_cm=220, depth_cm=208)
+    assert check_access_path(Dims(w=300, d=150, h=150), [car]).status == "fail"
+
+
+def test_something_longer_than_the_space_diagonal_still_fails():
+    car = PathSegment("lift", kind="lift", width_cm=218, height_cm=220, depth_cm=208)
+    assert check_access_path(Dims(w=420, d=20, h=20), [car]).status == "fail"
+
+
+def test_a_flexible_item_is_not_held_to_the_rigid_corner_maths():
+    """The turning formula assumes a rigid rectangle — right for a sofa, wrong
+    for a rolled rug, which you simply flex round the corner."""
+    turn = PathSegment("turn", kind="turn", width_cm=150, height_cm=240, turn_into_cm=90)
+    rug = Dims(w=300, d=30, h=30)
+    assert check_access_path(rug, [turn]).status == "fail"
+    lenient = check_access_path(rug, [turn], flexible=True)
+    assert lenient.status == "pass"
+    assert any("bends" in r.lower() for r in lenient.reasons)
+
+
+def test_flexibility_does_not_excuse_a_doorway_it_cannot_fit_through():
+    """The exemption is for turns only. A door is still a hole of a given size."""
+    door = PathSegment("door", kind="door", width_cm=75, height_cm=210)
+    assert check_access_path(Dims(w=200, d=120, h=100), [door], flexible=True).status == "fail"

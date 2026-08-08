@@ -36,6 +36,9 @@ def test_every_plan_it_emits_is_one_the_engine_accepts(plan):
     studio starts rendering layouts that do not hold."""
     assert plan.validation["status"] == "pass"
     assert plan.validation["reasons"] == []
+    # Advisories (a rug running under a door swing) are notes, not reasons:
+    # a pass with populated `reasons` would blur the two.
+    assert isinstance(plan.validation.get("notes", []), list)
 
 
 def test_the_plan_reproduces_when_re_validated_independently(plan):
@@ -234,8 +237,8 @@ def test_the_studio_translates_asins_into_words_for_the_user():
     js = Path("app/static/studio.js").read_text(encoding="utf-8")
     assert "function humanise(" in js
     # Every place a reason reaches the user must go through it.
-    for site in ("why.textContent = first ? humanise(first)",
-                 "esc(humanise(r))"):
+    assert "function humaniseWithin(" in js
+    for site in ("humanise(first)", "humanise(r)", "humaniseWithin(text, r.placed)"):
         assert site in js, f"a reason path is missing humanise(): {site}"
 
 

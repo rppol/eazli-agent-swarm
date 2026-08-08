@@ -78,6 +78,41 @@ STYLE_PATTERNS = {
     "scandi": r"scandi|farmhouse|slatted",
 }
 
+# Colour and material read off the listing title. Renders were per-role, so a
+# black leatherette sofa and a greige bouclé sofa drew identically — the plan
+# changed with style but the picture never did. These are the seller's own
+# words, so the render reflects the product rather than its category.
+#
+# Ordered: the first match wins, so "rose hip" beats a bare "rose", and
+# compound shades come before the plain ones they contain.
+COLOUR_WORDS: list[tuple[str, str]] = [
+    # Compound shades first, so "rose hip" beats a bare "rose".
+    ("greige", "#b6ada0"), ("rose hip", "#b5687a"), ("dusty pink", "#c99aa2"),
+    ("matte black", "#2b2f36"), ("off white", "#ece7de"),
+    # Then plain colours. These come BEFORE the wood tones because on an
+    # upholstered piece the wood is the legs and the colour is the fabric:
+    # "Grey Linen Fabric, Beech Legs" is a grey sofa, not a beech one.
+    ("charcoal", "#3a3f47"), ("black", "#2b2f36"), ("white", "#eceff3"),
+    ("cream", "#e8dfd0"), ("ivory", "#eee7d9"), ("beige", "#d6c7ae"),
+    ("grey", "#98a0aa"), ("gray", "#98a0aa"),
+    ("brown", "#7a5238"), ("tan", "#b6875a"),
+    ("navy", "#2f3f63"), ("blue", "#4c6ef5"),
+    ("green", "#4b7f5c"), ("olive", "#6b7148"),
+    ("pink", "#d29aa8"), ("rose", "#c07b88"), ("red", "#a5433c"),
+    ("gold", "#c9a227"), ("brass", "#c9a227"), ("silver", "#b9c0c8"),
+    # Wood and stone last: for a table with no other colour word, the timber
+    # IS the colour.
+    ("walnut", "#7b5334"), ("oak", "#b08e5f"), ("beech", "#d2b48c"),
+    ("marble", "#e6e4df"), ("ceramic", "#eae7e1"),
+    ("natural wood", "#a9784c"), ("wooden", "#a9784c"), ("wood", "#a9784c"),
+]
+
+MATERIAL_WORDS = [
+    "leatherette", "leather", "bouclé", "boucle", "velvet", "linen", "fabric",
+    "marble", "ceramic", "glass", "rattan", "bamboo", "bouclette",
+    "metal", "iron", "steel", "oak", "walnut", "beech", "wood",
+]
+
 ROOM_BY_CATEGORY = {
     "sofa": ["living_dining"],
     "armchair": ["living_dining", "bedroom"],
@@ -108,6 +143,8 @@ class Product:
     reviews: int
     style_tags: list[str]
     rooms: list[str]
+    colour_hex: str | None = None
+    material: str | None = None
     flags: list[str] = field(default_factory=list)
 
     @property
@@ -149,6 +186,8 @@ class Product:
             # invisible to a single-room search.
             **{f"room_{r}": True for r in self.rooms},
             "style": ",".join(self.style_tags),
+            "colour_hex": self.colour_hex or "",
+            "material": self.material or "",
             "flags": ",".join(self.flags),
             "usable": self.usable,
         }
@@ -237,6 +276,32 @@ def _from_labelled(axes: dict[str, float]) -> tuple[float, float, float] | None:
 # --------------------------------------------------------------------------
 # item-level parsing
 # --------------------------------------------------------------------------
+
+def _word(needle: str, haystack: str) -> bool:
+    """Whole-word match.
+
+    A substring test made "TV Stand", "Stain Resistant" and "Rectangular" all
+    match "tan", so half the catalogue rendered the same shade of tan. Short
+    colour words are especially prone to this.
+    """
+    return re.search(rf"(?<![a-z]){re.escape(needle)}(?![a-z])", haystack) is not None
+
+
+def _colour(title: str) -> str | None:
+    lowered = title.lower()
+    for word, value in COLOUR_WORDS:
+        if _word(word, lowered):
+            return value
+    return None
+
+
+def _material(title: str) -> str | None:
+    lowered = title.lower()
+    for word in MATERIAL_WORDS:
+        if _word(word, lowered):
+            return "boucle" if word == "bouclé" else word
+    return None
+
 
 def _classify(title: str, search_category: str) -> tuple[str, list[str]]:
     for name, pattern in CATEGORY_PATTERNS:
@@ -354,6 +419,8 @@ def parse_item(raw: dict) -> Product:
         rating=float(raw["rating"]) if raw.get("rating") else None,
         reviews=int(raw["reviews"]) if raw.get("reviews") else 0,
         style_tags=[s for s, pat in STYLE_PATTERNS.items() if re.search(pat, title, re.I)],
+        colour_hex=_colour(title),
+        material=_material(title),
         rooms=ROOM_BY_CATEGORY.get(category, []),
         flags=flags,
     )

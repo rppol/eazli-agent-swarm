@@ -28,3 +28,8 @@ export const PALETTE = {
 /** Same colour as an integer, for three.js materials. */
 export const hex = (role) =>
   parseInt((PALETTE[role] ?? PALETTE.other).slice(1), 16);
+
+/* Suggested, not sourced. Matches --warn in studio.css so the amber outline in
+   the render and the amber panel entry that explains it are the same colour. */
+export const SUGGESTION = '#d29922';
+export const suggestionHex = parseInt(SUGGESTION.slice(1), 16);

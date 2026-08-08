@@ -31,7 +31,7 @@ from pathlib import Path
 
 from app.catalog import parse_capture
 from app.home import load_home
-from app.planner import CATEGORY_FOR_ROLE_FALLBACK, RECIPES, auto_plan, swap
+from app.planner import CATEGORY_FOR_ROLE_FALLBACK, RECIPES, auto_plan, plan_flat, swap
 
 SRC = Path("app/static")
 OUT = Path("site")
@@ -122,6 +122,15 @@ def build_data() -> dict:
                 swap_bytes += _write(data / "swaps" / f"{ctx}.json", swaps)
                 swap_count += len(swaps)
 
+    # Whole-flat plans: one per unit per style, same budget split by area.
+    flat_count = 0
+    for unit in home.units:
+        for style in STYLES:
+            payload = plan_flat(unit.id, 8000, style)
+            if payload["rooms"]:
+                _write(data / "flats" / f"{slug(unit.id, 'flat', style)}.json", payload)
+                flat_count += 1
+
     _write(data / "index.json", {
         "generated_from": "app/geometry.py via tools/export_static.py",
         "units": [
@@ -134,7 +143,7 @@ def build_data() -> dict:
         "styles": ["-".join(s) if s else "any" for s in STYLES],
     })
 
-    return {"plans": plan_count, "swaps": swap_count,
+    return {"plans": plan_count, "swaps": swap_count, "flats": flat_count,
             "plan_kb": plan_bytes / 1024, "swap_kb": swap_bytes / 1024}
 
 
@@ -200,6 +209,7 @@ def main() -> None:
     ) / 1024
 
     print(f"plans        {stats['plans']:>5}   {stats['plan_kb']:>8.0f} KB")
+    print(f"whole flats  {stats['flats']:>5}")
     print(f"swaps        {stats['swaps']:>5}   {stats['swap_kb']:>8.0f} KB  (fetched per context)")
     chunks = sorted(OUT.glob("chunk-*.js"))
     print(f"studio.js (entry)      {app_kb:>8.0f} KB  {esbuild_note}")
