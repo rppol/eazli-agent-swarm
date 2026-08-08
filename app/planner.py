@@ -331,11 +331,13 @@ def auto_plan(
                 ),
             ))
         else:
+            what = slot["category"].replace("_", " ")
             reason = (
-                f"No usable {slot['category']} under {budget_left:.0f} SAR could be "
-                f"placed anywhere in the room alongside what is already there."
+                f"No {what} under {budget_left:.0f} SAR could be placed anywhere in "
+                f"the room alongside what is already there."
                 if pool else
-                f"No usable {slot['category']} in the catalogue under {budget_left:.0f} SAR."
+                f"Nothing in the {what} category costs under the {budget_left:.0f} SAR "
+                f"left in the budget."
             )
             plan.unfilled.append(UnfilledSlot(
                 slot_id=slot["slot_id"], role=slot["role"],

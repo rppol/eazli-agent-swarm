@@ -252,3 +252,32 @@ def test_the_loading_overlay_can_actually_hide():
 
     css = Path("app/static/studio.css").read_text(encoding="utf-8")
     assert "#loading[hidden] { display: none; }" in css
+
+
+def test_unfilled_slots_are_not_drawn_at_invented_positions():
+    """They were, as translucent footprints at Math.random() positions. The
+    planner never computed a position for something it could not place, so a
+    marker on the floor asserts a location that does not exist — the same class
+    of lie as guessing a dimension."""
+    from pathlib import Path
+
+    js = Path("app/static/studio.js").read_text(encoding="utf-8")
+    body = "\n".join(l for l in js.splitlines() if not l.strip().startswith(("//", "*", "/*")))
+    assert "Math.random" not in body
+    assert "addGhost" not in body
+
+
+def test_a_failed_refresh_does_not_leave_a_stale_pass_on_screen():
+    """The old verdict badge kept saying `pass` over a layout that had not been
+    re-checked, which claims a verification that did not happen."""
+    from pathlib import Path
+
+    js = Path("app/static/studio.js").read_text(encoding="utf-8")
+    assert "'not run'" in js
+    assert "has not been re-checked" in js
+
+
+def test_unfilled_reasons_do_not_leak_schema_underscores():
+    p = auto_plan("unit01", "bedroom", 450)
+    for u in p.unfilled:
+        assert "floor_lamp" not in u.reason and "dining_table" not in u.reason, u.reason

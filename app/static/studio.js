@@ -24,7 +24,7 @@ const CATEGORY_FOR_ROLE = {
 };
 
 const $ = (s) => document.querySelector(s);
-const state = { plan: null, room: null, style: [], assumptions: [], selected: null, meshes: new Map(), ghosts: [] };
+const state = { plan: null, room: null, style: [], assumptions: [], selected: null, meshes: new Map() };
 
 // ---------------------------------------------------------------- 3D scene
 
@@ -188,20 +188,14 @@ function addItem(item, room) {
   state.meshes.set(item.slot_id, mesh);
 }
 
-function addGhost(slot, room) {
-  // Unfilled slots are drawn as a footprint on the floor. The empty space is a
-  // finding, not an absence — hiding it would make a partial plan look whole.
-  const size = 0.9;
-  const g = new THREE.Mesh(
-    new THREE.PlaneGeometry(size, size),
-    new THREE.MeshBasicMaterial({ color: 0xf85149, transparent: true, opacity: 0.14, side: THREE.DoubleSide }),
-  );
-  g.rotation.x = -Math.PI / 2;
-  g.position.set((Math.random() - 0.5) * room.width * CM * 0.5, 0.004, (Math.random() - 0.5) * room.depth * CM * 0.5);
-  g.userData.ghost = true;
-  world.add(g);
-  state.ghosts.push(g);
-}
+// Unfilled slots are deliberately NOT drawn in the room.
+//
+// They were, as translucent footprints — at Math.random() positions, because
+// the planner never computed a position for something it could not place.
+// A marker on the floor asserts a location, and inventing one to represent
+// "we found nothing" is the same class of lie as guessing a dimension. The
+// panel lists every unfilled slot with the measurement that ruled its
+// candidates out, which is the honest place for it.
 
 // ---------------------------------------------------------------- views
 
@@ -245,10 +239,8 @@ function setView(name) {
 function render(plan) {
   state.plan = plan;
   state.room = plan.room_cm;
-  state.ghosts = [];
   buildRoom(plan.room_cm);
   plan.placed.forEach((i) => addItem(i, plan.room_cm));
-  if ($('#showGhosts').checked) plan.unfilled.forEach((s) => addGhost(s, plan.room_cm));
   paintVerdict(plan.validation, plan.total_sar, plan.budget_sar);
   paintHow(plan);
   paintPanel(plan);
@@ -562,8 +554,15 @@ async function runPlan() {
     render(plan);
     setView('iso');
   } catch (err) {
+    // Leaving the previous verdict on screen would claim the plan shown is
+    // still verified. It is not: it is whatever was there before the failure.
+    const v = $('#verdict');
+    v.className = 'verdict pending';
+    v.textContent = 'not run';
+    $('#verdict-why').hidden = true;
     $('#issues').innerHTML = `<div class="issue">${esc(err.message)} — is the
-      service running? <code>uv run uvicorn app.main:app --port 8000</code></div>`;
+      service running? <code>uv run uvicorn app.main:app --port 8000</code><br>
+      The layout below is from the previous run and has not been re-checked.</div>`;
   } finally {
     $('#loading').hidden = true;
     $('#run').disabled = false;
@@ -594,7 +593,6 @@ async function boot() {
   $('#budget').onchange = runPlan;
   $('#picker-close').onclick = () => { $('#picker').hidden = true; };
   $('#picker').onclick = (e) => { if (e.target.id === 'picker') $('#picker').hidden = true; };
-  $('#showGhosts').onchange = () => state.plan && render(state.plan);
   document.querySelectorAll('#viewtools button').forEach((b) =>
     b.onclick = () => setView(b.dataset.view));
   addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#picker').hidden = true; });
