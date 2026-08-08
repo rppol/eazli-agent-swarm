@@ -22,8 +22,12 @@ const meshes = new Map();
 export function init(element) {
   host = element;
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0b0e13);
-  scene.fog = new THREE.Fog(0x0b0e13, 22, 60);
+  // Matches --scene in studio.css. The studio used to be a dark instrument
+  // panel and the viewport was darker still; against eazli's white identity
+  // that same rectangle read as a broken embed rather than a room. A pale
+  // ground also lights the furniture the way a showroom photograph would.
+  scene.background = new THREE.Color(0xeef0fb);
+  scene.fog = new THREE.Fog(0xeef0fb, 26, 70);
 
   camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
   renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -36,7 +40,7 @@ export function init(element) {
   controls.dampingFactor = 0.08;
   controls.maxPolarAngle = Math.PI / 2 - 0.02;   // never go under the floor
 
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x4a5361, 2.2));
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xc9cdf0, 2.0));
   const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
   keyLight.position.set(6, 11, 5);
   keyLight.castShadow = true;
@@ -145,7 +149,7 @@ function buildShell(target, roomCm, label) {
 
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(W, D),
-    new THREE.MeshStandardMaterial({ color: 0x5c6672, roughness: 0.92 }),
+    new THREE.MeshStandardMaterial({ color: 0xa8adc4, roughness: 0.94 }),
   );
   floor.rotation.x = -Math.PI / 2;
   floor.receiveShadow = true;
@@ -209,7 +213,10 @@ function roomLabel(text, W, D) {
   const c = document.createElement('canvas');
   c.width = 512; c.height = 96;
   const g = c.getContext('2d');
-  g.fillStyle = '#e6edf3';
+  // #12164c: eazli's navy, the same ink the panel uses. This was near-white
+  // for the near-black scene it used to sit on; against the pale ground the
+  // three whole-flat captions faded to almost nothing.
+  g.fillStyle = '#12164c';
   g.font = '600 46px ui-sans-serif, system-ui, sans-serif';
   g.textAlign = 'center'; g.textBaseline = 'middle';
   g.fillText(text.replace(/_/g, ' '), 256, 48);
