@@ -777,6 +777,34 @@ class TestPerAxisPlausibility:
                                "43.2D x 76.2W x 75H centimeters"}))
         assert "implausible_for_category" in p.flags
 
+    def test_a_34cm_deep_bed_is_flagged_on_footprint(self):
+        """Real: B0FZBJXHKM, "l'elefante Single Metal Bed Frame 90x190 cm",
+        parses to w=120.0 x d=34.0 x h=91.0 with `dims_confidence: parsed` --
+        the title's own 90x190cm is nowhere in that triple. `bed` was simply
+        absent from `PLAUSIBLE_MIN_FOOTPRINT_CM` (the docstring's exemption
+        list names rug, bookshelf, wall_art, mirror, coffee_table, plant and
+        vase on purpose; bed was never one of them, just left out), so a
+        34cm-deep bed -- no mattress is that narrow -- passed both the extent
+        check (120cm, an unremarkable largest side) and the height check
+        (91cm, a plausible headboard) and came back `usable`. It was then
+        placed, unremarked, in real generated bedroom plans (unit01/bedroom
+        and others at the premium tier), where `bed_access` and
+        `bedside_reach` computed real-looking clearances against a bed that
+        cannot exist.
+        """
+        bed = next(p for p in parse_capture() if p.asin == "B0FZBJXHKM")
+        assert bed.category == "bed"
+        assert bed.dims.d == pytest.approx(34.0)
+        assert "implausible_for_category" in bed.flags
+        assert bed.usable is False
+
+    def test_beds_with_a_believable_footprint_are_not_flagged(self):
+        p = parse_item(item(cat="bed", title="Queen Platform Bed Frame",
+                            **{"Item Dimensions D x W x H":
+                               "160D x 200W x 35H centimeters"}))
+        assert "implausible_for_category" not in p.flags
+        assert p.usable is True
+
 
 # --------------------------------------------------------------------------
 # price plausibility

@@ -541,11 +541,21 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
         if role in {"sofa", "armchair"}:
             # Back to a wall, then as much open space in front as the room allows.
             back_to_wall = _front_space(x, y, w, d, _OPPOSITE[facing], room) <= 1
-            if role == "armchair" and sofas:
+            if role == "armchair" and (sofas or beds):
                 # An armchair is an addition to a seating group, not a second
                 # focal point. Ranked purely on back-to-wall it took the far
                 # wall of the room and read as abandoned furniture, so it is
                 # drawn toward the sofa the way the coffee table already is.
+                #
+                # A bedroom has no sofa, so `sofas` was always empty there and
+                # this branch never ran: the bed is the anchor instead, added
+                # to `FOCAL_ROLES` alongside it. Without the `beds` fallback
+                # here, adding `bed` to `FOCAL_ROLES` on its own would not fix
+                # anything -- it would only turn every one of those bedrooms
+                # into a slot the search burns its whole budget on, exactly
+                # the way `bedside_reach` did before it got a branch. Sofa
+                # wins if a room somehow had both, since a sofa's living-room
+                # seating group is the stronger claim on a second chair.
                 #
                 # Position was not enough. This branch never inspected `facing`,
                 # so among equally close candidates it took whichever facing
@@ -555,7 +565,8 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
                 # because a chair facing nothing can no longer validate at all:
                 # ordering guaranteed-invalid candidates ahead of valid ones is
                 # how the bedside slot burned its whole position budget.
-                ax, ay, *_ = sofas[0].footprint()
+                anchor = sofas[0] if sofas else beds[0]
+                ax, ay, *_ = anchor.footprint()
                 return (spread, not _looks_at(box, facing, focal), not back_to_wall,
                         abs(x - ax) + abs(y - ay))
             return (spread, not back_to_wall, -front, x + y)

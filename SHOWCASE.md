@@ -218,7 +218,7 @@ Four budget tiers were added — 3,000 / 8,000 / 15,000 / 30,000 SAR. They did
 almost nothing: `standard`, `comfort` and `premium` returned **byte-identical
 plans**, so a 30,000 SAR brief produced a 3,734 SAR room. Rather than guess at
 the fix, two agents with opposing incentives were asked to argue it, each told
-to ground every claim in the 280-listing catalogue and to answer the other's
+to ground every claim in the 465-listing catalogue and to answer the other's
 strongest point rather than the weakest.
 
 ### Adam: the ceiling is a bug wearing a feature's clothes
@@ -256,7 +256,7 @@ survives at the top of the price range.
 | 30,000+ | 23 | **1** | **19** | **0.0** |
 
 Every listing above 30,000 SAR has zero reviews. Spearman ρ(price, reviews)
-across the usable pool is **−0.33**. Growing the catalogue from 75 to 280 items
+across the usable pool is **−0.33**. Growing the catalogue from 75 to 465 items
 dropped usability from 76% to 45%, and the dilution is concentrated exactly
 where budget headroom would send the planner.
 
@@ -703,8 +703,8 @@ rejected for a hallway it would sail through, a rigid sofa waved through a door
 it cannot clear.
 
 **It refuses to answer.** `dims_confidence` travels with every number
-(`stated` / `parsed` / `conflicted` / `missing`). Of 465 real listings only 211
-are usable for a confirmed fit claim. The other 18 stay in the index so an agent
+(`stated` / `parsed` / `conflicted` / `missing`). Of 465 real listings only 210
+are usable for a confirmed fit claim. The other 255 stay in the index so an agent
 can find and dismiss them:
 
 ```
@@ -732,7 +732,7 @@ Item Dimensions:           79.4 x 36 x 175.5  ┘ 40cm apart
 | **Agents** | Seven, each with a *negative* scope taken from eazli's published policy |
 | **Review** | An adversarial auditor, an LLM judge and a code review found **14 defects**; all fixed and regression-tested |
 
-**120 tests · 32 ground-truth evals · CI green**
+**369 tests · 32 ground-truth evals · CI green**
 
 The defects were almost all one shape — a check that silently did not run:
 
@@ -755,5 +755,5 @@ The defects were almost all one shape — a check that silently did not run:
 ```bash
 uv sync && make index && make serve   # then, in another shell:
 make demo
-make check                            # 120 tests + 32 evals
+make check                            # 369 tests + 32 evals
 ```

@@ -122,7 +122,7 @@ None of that is visible from a product listing.
 ### 3.2 Catalogue dimension quality is the binding constraint
 
 Any fit guarantee is downstream of dimension data, and dimension data from third-party
-sellers is bad. I scraped 280 real amazon.sa furniture listings — a reasonable proxy for
+sellers is bad. I scraped 75 real amazon.sa furniture listings — a reasonable proxy for
 what vendor-supplied feeds will look like — and parsed them:
 
 | | count |
@@ -268,5 +268,5 @@ you.
 ---
 
 *All quotations are from eazli.com as captured on 6 August 2026. The floor plan used for
-testing is a real apartment plate; the catalogue is 280 real amazon.sa listings. Nothing
+testing is a real apartment plate; the catalogue is 465 real amazon.sa listings. Nothing
 in the prototype is mocked.*

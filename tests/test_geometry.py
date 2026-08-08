@@ -421,6 +421,34 @@ def test_a_rug_may_lie_under_the_furniture_standing_on_it():
     assert not any("overlap" in r.lower() for r in v.reasons)
 
 
+def test_validate_layout_does_not_drop_the_notes_check_fit_collected():
+    """`validate_layout` builds a `notes` list from every `check_fit` call in
+    its loop -- `notes.extend(v.details.get("notes", []))` -- and then never
+    puts it anywhere: the final `Verdict` is built with `reasons=reasons` only,
+    so `details` stays the dataclass default `{}` and every caller reading
+    `verdict.details.get("notes", [])` (`auto_plan`'s final validation, and the
+    `swap` endpoint) gets `[]` no matter what ran. A rug under a door swing
+    tells you, in `check_fit`, to check the pile clears the undercut; the same
+    rug in the same room through `validate_layout` says nothing at all -- the
+    single-item and whole-layout paths silently disagree about what a user
+    needs to know.
+    """
+    placements = [
+        # LIVING's door is N, offset 40, 90cm leaf -> swing box (40,0,130,90).
+        # This rug overlaps it.
+        Placement("rug", Dims(w=200, d=200, h=2), x=0, y=0, facing="N", role="rug"),
+    ]
+    single = check_fit(placements[0], LIVING)
+    assert single.details.get("notes"), "check_fit itself should note the door swing"
+
+    v = validate_layout(LIVING, placements)
+    assert v.status == "pass"
+    assert v.details.get("notes"), (
+        "validate_layout collects notes from check_fit but discarded them "
+        "before returning; the door-swing-over-rug warning vanished"
+    )
+
+
 def test_a_long_thin_item_can_go_diagonally_into_a_lift_car():
     """A 3m rolled rug does not fit a 218x208x220cm car along any axis, but the
     car's space diagonal is 373cm — you stand it corner to corner, which is what

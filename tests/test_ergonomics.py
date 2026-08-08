@@ -67,6 +67,35 @@ class TestYouHaveToBeAbleToOpenIt:
         ])
         assert v.status == "pass", v.reasons
 
+    def test_reach_clearance_exactly_at_the_minimum_against_furniture_is_a_tight_pass_not_a_silent_one(self, living):
+        """unit04/living_dining/30000/['warm', 'minimal'], exactly as generated:
+        a bookshelf at (0, 90) facing S and a 40cm-tall side table at (0, 165).
+        `_front_gap` reports exactly 45cm, which equals `REACH_SHELF_CM` to the
+        centimetre, so this returns a bare `pass` -- identical to a bookshelf
+        with 3 clear metres in front of it.
+
+        The 45cm number was written for reaching into a shelf that opens onto
+        open floor, where a person has room to adjust stance or crouch for a
+        low shelf. Here the 45cm pocket is capped by another object rather
+        than open room: there is nowhere to give if you need to lean down or
+        step back mid-reach, and no floor to set the book down on except the
+        table that is already at the boundary. `check_fit` already treats an
+        opening within `TIGHT_MARGIN_CM` of failing as pass-with-a-note (the
+        door and lift checks say so explicitly); a reach clearance that is
+        capped by furniture with zero margin deserves the same honesty rather
+        than reading as identical to a bookshelf against open floor.
+        """
+        v = validate_layout(living, [
+            at("bookshelf", 0, 90, 60, 30, 158, facing="S"),
+            at("side_table", 0, 165, 39.5, 39.5, 40, facing="S"),
+        ])
+        assert v.status == "pass", v.reasons
+        notes = v.details.get("notes", [])
+        assert any("tight" in n.lower() for n in notes), (
+            f"a reach clearance pinned to its minimum by another piece of "
+            f"furniture should surface that, not pass silently: {notes}"
+        )
+
 
 class TestABedsideTableHasToBeBesideTheBed:
     """A side table in a bedroom is for the lamp, the book and the glass of
@@ -255,6 +284,35 @@ class TestASeatHasToFaceSomething:
         piece placed has nothing to look at yet."""
         v = validate_layout(living, [
             at("sofa", 120, 0, 173.0, 86.9, 82.3, facing="S")])
+        assert v.status == "pass", v.reasons
+
+    def test_a_bedroom_armchair_facing_away_from_the_bed_is_rejected(self, bedroom):
+        """FOCAL_ROLES was {sofa, coffee_table, tv_console} -- none of which a
+        `bedroom` recipe ever contains, so `_seat_has_a_focal_point` could
+        never fire in any bedroom: `targets` came back empty and the function
+        returned early every time. unit01/bedroom/30000/['industrial',
+        'mid_century'], exactly as generated: an armchair at (0, 240) facing
+        E, with the bed at (0, 75) sharing zero lateral band with it -- the
+        living-room equivalent of this exact shape is rejected two tests
+        above. 25 of 35 generated premium-tier bedrooms placed the armchair
+        with zero lateral overlap with the bed for the same reason.
+        """
+        why = failed(bedroom,
+                     at("bed", 0, 75, 200.0, 160.0, 35.0, facing="S"),
+                     at("armchair", 0, 240, 55.0, 45.0, 67.0, facing="E"))
+        assert why, "an armchair facing away from the only thing in a bedroom should fail"
+        assert "armchair" in why
+
+    def test_a_bedroom_armchair_turned_toward_the_bed_passes(self):
+        # A bigger room than the shared fixture: the armchair needs its own
+        # 90cm walkway clearance AND the bed within FOCAL_POINT_MAX_CM, and
+        # the bed is not a COMPANION_PAIRS exemption the way a coffee table
+        # is, so both distances have to be satisfied at once.
+        big_bedroom = Room(name="bedroom", width_cm=400, depth_cm=400, height_cm=290)
+        v = validate_layout(big_bedroom, [
+            at("bed", 0, 0, 200.0, 160.0, 35.0, facing="S"),
+            at("armchair", 50, 250, 55.0, 45.0, 67.0, facing="N"),
+        ])
         assert v.status == "pass", v.reasons
 
 

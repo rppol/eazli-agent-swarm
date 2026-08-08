@@ -113,6 +113,17 @@ PLAUSIBLE_HEIGHT_CM = {
 # depth is the correct reading, see DEFAULT_HANGABLE_DEPTH_CM), coffee_table
 # (the capture has real 28 cm-deep C-shaped side tables), plant and vase (a
 # 10 cm pot is ordinary).
+#
+# `bed` was missing from this table entirely -- not one of the deliberate
+# exemptions above, just never added. B0FZBJXHKM ("l'elefante Single Metal
+# Bed Frame 90x190 cm") parsed to w=120 x d=34 x h=91: 120cm is an
+# unremarkable largest extent and 91cm an unremarkable height, so it passed
+# both existing checks and came back `usable` at a 34cm-deep footprint no
+# mattress has. It was then placed in real generated bedroom plans, where
+# `bed_access` and `bedside_reach` computed clearances against a bed shape
+# that cannot exist. 60cm mirrors the sofa floor: every genuinely usable bed
+# in the capture has a narrow side of at least 75cm, so this only catches
+# the mislabelled one.
 PLAUSIBLE_MIN_FOOTPRINT_CM = {
     "sofa": 60,
     "armchair": 40,
@@ -120,6 +131,7 @@ PLAUSIBLE_MIN_FOOTPRINT_CM = {
     "tv_unit": 25,
     "wardrobe": 30,
     "dining_chairs_pair": 35,
+    "bed": 60,
 }
 
 # How far above its category's median a price has to sit before it is called

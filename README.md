@@ -7,7 +7,7 @@ output; run it locally with `make studio` to have the engine judge every edit li
 
 A working multi-agent system that implements [eazli's](https://www.eazli.com) own
 published agent model — Zeina, Noura and Adam — against a real apartment floor plan and
-280 real amazon.sa listings.
+465 real amazon.sa listings.
 
 **The one idea:** the LLM proposes, Python verifies. No agent decides whether a sofa
 fits. That is computed deterministically and handed to the agents as a fact they may not
@@ -31,8 +31,8 @@ assumed.
 ```
 Claude Code subagents        MCP shim  →   FastAPI   →   ChromaDB
   zeina-guide      intake, routing        geometry.py     eazli_kb  (78)
-  noura-designer   layout slots           (deterministic, products  (75)
-  adam-advisor     product sourcing       120 tests)      design_principles (6)
+  noura-designer   layout slots           (deterministic, products  (465)
+  adam-advisor     product sourcing       369 tests)      design_principles (13)
   fit-auditor      adversarial re-check
   eazli-judge      LLM-as-judge eval
   surveyor         floor plan → geometry
@@ -90,7 +90,7 @@ isometric view and how the agents argued their way here.
 ```bash
 uv sync
 PYTHONPATH=. uv run python ingest/build_kb.py        # 78 chunks + 6 design rules
-PYTHONPATH=. uv run python ingest/build_catalog.py   # 280 amazon.sa products
+PYTHONPATH=. uv run python ingest/build_catalog.py   # 465 amazon.sa products
 uv run uvicorn app.main:app --port 8000              # docs at /docs
 
 uv run pytest -q                                     # unit + integration
@@ -114,7 +114,7 @@ cloning. Until then the agents fall back to `cli.py`, which hits the same endpoi
 `missing`. An item with no published dimensions returns `unverified`, never `pass`.
 Refusing to answer is the feature; a confident wrong answer is what produces a return.
 
-Of 465 real listings, **211 are usable for a confirmed fit claim**. The other 254 are
+Of 465 real listings, **210 are usable for a confirmed fit claim**. The other 255 are
 kept in the index so an agent can find and dismiss them, each flagged with the reason:
 contradictory, physically impossible, implausibly priced, the wrong category entirely,
 or publishing no dimensions at all. Nothing is refused silently.

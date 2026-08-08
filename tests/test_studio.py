@@ -962,6 +962,21 @@ def _openings(run_studio, path, style=(), tier=None):
 # unit, room, style, tier — varied on every axis the studio offers, and chosen
 # to include the two shapes that must not read alike (a 335x551 corridor and a
 # 610x335 hall), a starter tier that drops slots, and a whole flat.
+#
+# `unit01__living_dining__warm-minimal__standard.json` was added, and
+# `unit04__living_dining__industrial-mid_century__comfort.json` swapped for
+# `unit04__living_dining__warm-minimal__comfort.json`, once `validate_layout`
+# started actually returning the `notes` it already collected (it built the
+# list and threw it away before this fix -- see app/geometry.py). Noura's
+# opening leads with an advisory over the room-shape description on purpose
+# ("An advisory is about the room, so it outranks the room's proportions" —
+# app/static/studio.js), so the two configurations the corridor/hall
+# comparison depends on have to be ones where the plan genuinely raised none,
+# or the test is asserting a sentence neither plan says. The original
+# `unit01__living_dining__modern-luxury__premium.json` now carries two (a
+# bookshelf and a dining table each pinned at their reach minimum by a
+# neighbour) and stays in the spread for the auditor/adam assertions that
+# don't care what Noura opens on.
 _SPREAD = [
     ("plans", "unit01__living_dining__warm-minimal__starter.json",
      ["warm", "minimal"], "starter"),
@@ -969,8 +984,8 @@ _SPREAD = [
      ["modern", "luxury"], "premium"),
     ("plans", "unit01__bedroom__boho-scandi__standard.json",
      ["boho", "scandi"], "standard"),
-    ("plans", "unit04__living_dining__industrial-mid_century__comfort.json",
-     ["industrial", "mid_century"], "comfort"),
+    ("plans", "unit04__living_dining__warm-minimal__comfort.json",
+     ["warm", "minimal"], "comfort"),
     ("plans", "unit04__master_bedroom_1__any__starter.json", [], "starter"),
     ("plans", "unit05__master_bedroom__warm-minimal__premium.json",
      ["warm", "minimal"], "premium"),
@@ -978,6 +993,8 @@ _SPREAD = [
      ["warm", "minimal"], "starter"),
     ("flats", "unit01__flat__modern-luxury__premium.json",
      ["modern", "luxury"], "premium"),
+    ("plans", "unit01__living_dining__warm-minimal__standard.json",
+     ["warm", "minimal"], "standard"),
 ]
 
 
@@ -996,15 +1013,15 @@ def spread(run_studio):
 
 @pytest.mark.parametrize("who", ["zeina", "noura", "adam", "auditor"])
 def test_each_agent_opens_on_something_this_configuration_did(spread, who):
-    """Eight configurations, eight different first sentences per agent.
+    """Nine configurations, at most one repeated first sentence per agent.
 
     The bar is not "the paragraphs differ somewhere" — it is that the sentence
-    a reader's eye lands on first was chosen from this plan's own data. Seven
-    of eight rather than eight allows for two configurations that genuinely
-    produced the same notable fact for one agent (two rooms that each lost one
-    listing at the same lift door have the same story to tell, and inventing a
-    difference would be the failure this whole file argues against). It does
-    not allow for a template.
+    a reader's eye lands on first was chosen from this plan's own data. One
+    exact repeat is tolerated for two configurations that genuinely produced
+    the same notable fact for one agent (two different bedrooms whose only
+    advisory is the same rug under the same N-wall door swing say the same
+    sentence, and inventing a difference would be the failure this whole file
+    argues against). It does not allow for a template.
     """
     firsts = [cfg[who] for cfg in spread.values()]
     assert len(set(firsts)) >= len(firsts) - 1, (
@@ -1027,9 +1044,15 @@ def test_a_brief_that_could_not_be_met_is_the_first_thing_zeina_says(spread):
 def test_noura_does_not_describe_a_corridor_and_a_hall_the_same_way(spread):
     """335x551 and 610x335 are both "the living/dining room" and are not
     remotely the same problem to lay out. The old copy printed both as "The
-    room is NxN cm with 1 door on the plan"."""
-    corridor = spread["unit01__living_dining__modern-luxury__premium.json"]["noura"]
-    hall = spread["unit04__living_dining__industrial-mid_century__comfort.json"]["noura"]
+    room is NxN cm with 1 door on the plan".
+
+    Both configurations here are chosen with zero `validation` advisories, so
+    the room-shape sentence is actually what leads -- an advisory outranks it
+    (see the note above `_SPREAD`), and a config carrying one would test
+    nothing about how corridors and halls are described.
+    """
+    corridor = spread["unit01__living_dining__warm-minimal__standard.json"]["noura"]
+    hall = spread["unit04__living_dining__warm-minimal__comfort.json"]["noura"]
     assert corridor != hall
     assert "551" in corridor and "610" in hall
     # Not merely different numbers in one sentence: a different reading of the

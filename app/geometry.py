@@ -265,7 +265,15 @@ LAMP_REACH_ROLES = {"sofa", "armchair", "bed"}
 # What an armchair is allowed to be facing. The sofa is the anchor everything
 # else orients around, so it is a target and never a subject: asking the first
 # piece placed to face something would make an empty room unfurnishable.
-FOCAL_ROLES = {"sofa", "coffee_table", "tv_console"}
+#
+# `bed` belongs here for the same reason `sofa` does: a `bedroom` recipe
+# never contains a sofa, coffee table or TV console, so without it this set
+# was structurally empty in every bedroom and `_seat_has_a_focal_point`
+# could never fire there at all -- not "rarely triggered", literally dead in
+# one of the engine's two room types. 25 of 35 generated premium-tier
+# bedrooms (armchair is a premium unlock) placed the armchair with zero
+# lateral overlap with the bed, and all 25 read as a clean `pass`.
+FOCAL_ROLES = {"sofa", "coffee_table", "tv_console", "bed"}
 
 
 def front_clearance_for(role: str | None) -> float | None:
@@ -458,6 +466,7 @@ def check_fit(
         probe = _flip(placement) if pull_out else placement
 
         gap, blocker = _front_gap(probe, room, others)
+        where = "to push back behind" if pull_out else "of walkway in front of"
         if gap < front_clearance_cm:
             against = blocker if blocker else "the wall"
             # The rationale has to match the number quoted, or the sentence
@@ -467,11 +476,28 @@ def check_fit(
                 else "walkway_primary" if front_clearance_cm >= WALKWAY_PRIMARY_CM
                 else "walkway_secondary"
             )
-            where = "to push back behind" if pull_out else "of walkway in front of"
             reasons.append(
                 f"Only {gap:.0f}cm {where} {placement.item_id} "
                 f"(blocked by {against}); {front_clearance_cm:.0f}cm needed. "
                 f"{RULES[rule]['text']}"
+            )
+        elif blocker and gap - front_clearance_cm < TIGHT_MARGIN_CM:
+            # A clearance measured out to a WALL has room to spare beyond the
+            # stated minimum by construction: the wall does not end there, it
+            # just keeps being clear. Measured out to another piece of
+            # furniture instead, the minimum IS the whole available margin —
+            # nowhere to adjust stance, crouch for a low shelf or set
+            # something down, and the far edge is a hard object rather than
+            # open room. unit04/living_dining/30000/warm+minimal passed a
+            # bookshelf (REACH_SHELF_CM=45cm) with a side table standing at
+            # exactly 45cm: a bare `pass`, reading identically to a bookshelf
+            # with three clear metres in front of it. Same TIGHT treatment
+            # `_fits_through_opening` already gives a doorway with no margin.
+            notes.append(
+                f"Only {gap:.0f}cm {where} {placement.item_id}, right at the "
+                f"{front_clearance_cm:.0f}cm minimum — blocked by {blocker} rather "
+                f"than open floor, so there is no room to adjust stance or step "
+                f"back. TIGHT; check this one in person before ordering."
             )
 
     if role_unknown and not reasons:
@@ -562,6 +588,22 @@ COMPANION_PAIRS = [
     # A bedside table belongs pressed against the bed. Counting it as an
     # obstruction rejected the one arrangement that is actually correct.
     *({"bed", r} for r in ("side_table", "nightstand", "table")),
+    # The bed is the armchair's focal point in a bedroom (see FOCAL_ROLES),
+    # the same relationship a sofa has to its coffee table -- turned toward
+    # it, not separated from it by a walkway. Without this, `_front_gap`
+    # measured the armchair's clearance TO the bed itself and demanded
+    # WALKWAY_PRIMARY_CM (90cm) of open floor between chair and bed on top
+    # of the <=300cm the focal rule already requires, which is not "a chair
+    # facing the bed", it is "a chair the bed is in the way of". In a bed
+    # this size relative to the room (203x193 in a 335x305 unit01 bedroom)
+    # that combination has no solution at all: every position close enough
+    # to face the bed was too close to also clear 90cm from it, and the slot
+    # went unfilled in 13 of 200 generated plans the moment the focal-point
+    # rule started applying to bedrooms. `_seat_has_a_focal_point` still
+    # enforces the real constraint -- oriented toward the bed, within 300cm
+    # -- this exemption only removes the walkway demand the bed was never
+    # supposed to carry.
+    {"armchair", "bed"},
 ]
 
 
@@ -658,7 +700,13 @@ def validate_layout(room: Room, placements: Sequence[Placement]) -> Verdict:
         reasons.extend(ergonomic)
         statuses.append("fail")
 
-    return Verdict(status=_combine(statuses), reasons=reasons)
+    # `notes` was collected from every per-item `check_fit` call above and
+    # then discarded here: the door-swing-over-rug undercut warning existed
+    # in `check_fit`'s own return and vanished the moment a caller went
+    # through the whole-layout path instead of a single-item one.
+    # `auto_plan`'s final validation and the `swap` endpoint both read
+    # `verdict.details.get("notes", [])`, so both got `[]` unconditionally.
+    return Verdict(status=_combine(statuses), reasons=reasons, details={"notes": notes})
 
 
 def _bedside_within_reach(placements) -> list[str]:

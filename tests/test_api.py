@@ -212,3 +212,65 @@ def test_unknown_price_is_not_treated_as_free(client):
 def test_health_is_not_ok_when_a_collection_is_missing(client):
     body = client.get("/health").json()
     assert body["ok"] == all(body["collections"].values())
+
+
+def test_products_index_is_not_stale_against_the_capture_file(client):
+    """`/products/search` reads the persisted `products` Chroma collection,
+    which `ingest/build_catalog.py` builds from `parse_capture()` but does
+    NOT rebuild automatically when the raw capture file grows. The capture
+    went 75 -> 465 listings over four scrape passes and the index was
+    rebuilt for some of those passes but not the last one: production sat at
+    280 while the live capture (and every deterministic planner path, which
+    calls `parse_capture()` directly) had already moved to 465. An agent
+    calling `search_products` for B0CC2PLFGN -- the flagship target-seeking
+    example in SHOWCASE.md -- got zero hits for a product that fits and is
+    in budget, because it was scraped in a pass the index never absorbed.
+    Equal counts is what "the search tool sees the same catalogue the
+    planner does" actually means; nothing less proves it.
+    """
+    from app import store
+    from app.catalog import parse_capture
+
+    assert store.collection("products").count() == len(parse_capture())
+
+
+def test_products_search_can_find_a_listing_from_the_latest_scrape_pass(client):
+    """Concrete instance of the staleness above: this ASIN is real, priced,
+    dimensioned and named explicitly in SHOWCASE.md's budget-tier debate. A
+    stale index returns zero hits for it, which is indistinguishable from
+    "does not exist" to every agent built on top of `search_products`.
+    """
+    r = client.post("/products/search", json={"query": "VanAcc L-shaped sofa bed", "k": 20})
+    asins = [p["asin"] for p in r.json()["results"]]
+    assert "B0CC2PLFGN" in asins
+
+
+def test_design_principles_index_is_not_stale_against_the_rule_table(client):
+    """`ingest/build_kb.py` builds `design_principles` from `RULES.items()` --
+    one chunk per rule -- but nothing rebuilds it when `RULES` grows. `RULES`
+    went from 6 entries to 13 across two commits (`reach_clearance`,
+    `bedside_reach`, `bed_access`, `coffee_table_reach`, `tv_sightline`,
+    `rug_anchors_seating`, `lamp_within_reach_of_seating`,
+    `seat_has_a_focal_point` all landed after the index was last built), and
+    the persisted collection was still sitting at exactly the original 6 --
+    `rule-coffee_table_reach`, `rule-door_swing`, `rule-pull_out`,
+    `rule-sofa_to_coffee_table`, `rule-walkway_primary`,
+    `rule-walkway_secondary` -- with every ergonomic rule this project's own
+    changelog calls out by name missing from it. `search_eazli_kb` is Noura's
+    citation tool: asked why an armchair needs to face the bed, it had no
+    rule to point to for seven of this engine's thirteen constraints.
+    """
+    from app import store
+    from app.geometry import RULES
+
+    assert store.collection("design_principles").count() == len(RULES)
+
+
+def test_principles_search_can_cite_a_newly_landed_ergonomic_rule(client):
+    """Concrete instance: `bed_access` is real, enforced in `geometry.py`,
+    and referenced in this project's own commit history. A stale index
+    returns zero hits for it."""
+    r = client.post("/principles/search", json={
+        "query": "how much clear space does a bed need to get into it", "k": 5})
+    ids = [hit.get("rule") or hit.get("id") for hit in r.json()["results"]]
+    assert any("bed_access" in str(i) for i in ids)
