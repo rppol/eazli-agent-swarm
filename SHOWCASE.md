@@ -433,6 +433,63 @@ The last one is the same move as `dims_confidence`, applied to money: the
 useful answer to *"why didn't you spend my 30,000 SAR?"* is a measurement, not
 a better-sounding plan.
 
+
+---
+
+## What the debate missed, and why
+
+A fair question, asked by the person this was built for: the adversarial
+auditor and the whole chain-of-thought loop were supposed to catch bad work.
+So why did a bedroom ship that put an armchair flat against 180cm of shelving
+and a bedside table 35cm from the bed?
+
+It is worth answering precisely, because the reason is structural rather than
+careless.
+
+**The auditor held only the planner's own instruments.** Its tools were
+`check_fit`, `check_access_path`, `validate_layout`, `get_room`. Every one of
+them calls the same engine the planner had already called. Its brief said it
+"independently re-verifies every spatial claim" — but *independently* meant
+running the same checks a second time, not asking whether the checks were
+complete. `FRONT_CLEARANCE_BY_ROLE` gave storage 0cm, so no tool it held could
+form the sentence "the wardrobe cannot open". It had the authority to reject a
+**plan** and no standing to reject a **rule**.
+
+An adversary issued the defendant's own instruments inherits the defendant's
+blind spots.
+
+Two things compounded it. **The debate was scoped to a question that could not
+surface it** — "should a bigger budget buy a better room?" is an economics
+question, and both agents answered it well; neither was asked whether anyone
+could live in the result. And **the entire loop was numeric.** Nothing in it
+ever looked at the render. The defect was invisible in the data unless you knew
+to ask, and obvious in about two seconds from a screenshot.
+
+The judge did not save it either: its rubric scores groundedness, scope
+discipline and calibrated honesty. None of those is *fitness for purpose*.
+
+### What changed
+
+Not more debate. The auditor now has `Read` and `Grep`, an instruction to open
+`app/geometry.py` and read the rule table itself, and one question no tool
+asks:
+
+> Would a person be able to use this room? Open the wardrobe. Get into the bed.
+> Reach the lamp from the chair. Pull out a dining chair. If any of those is
+> impossible in a layout that returned `pass`, you have found a missing rule.
+
+A missing rule is now a more serious finding than a failed plan, and it has its
+own output type: **RULE GAP**, requiring the passing arrangement, the
+coordinates, what a person cannot do, and the threshold that would catch it.
+The brief carries the bedroom that got through, as the worked example.
+
+The general lesson is worth more than the three rules it produced.
+**"Every check passed" is a statement about the checks.** An adversarial
+reviewer that can only re-run existing tests is a regression suite with
+opinions; to be adversarial it has to be able to attack the test set. And a
+verification loop that never renders its own output will keep missing whatever
+is only visible.
+
 ---
 
 ## Where the agents disagreed
