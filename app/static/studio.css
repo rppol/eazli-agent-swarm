@@ -154,13 +154,25 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 372px; min-height: 0; 
 .badge.unv   { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
 
 #issues { padding: 12px 14px; display: grid; gap: 8px; }
+/* Severity is carried by the tint and the marker, not by a bar down one edge.
+   A blocker and a note need to be told apart at a glance while reading a list
+   of measurements, so the signal is a small dot and a wash of the same hue. */
 .issue {
   font-size: 12px; line-height: 1.5; color: var(--ink);
-  border-left: 2px solid var(--bad); padding: 8px 10px;
+  padding: 9px 11px 9px 26px; position: relative;
+  border: 1px solid color-mix(in srgb, var(--bad) 28%, transparent);
   background: color-mix(in srgb, var(--bad) 8%, transparent);
-  border-radius: 0 6px 6px 0;
+  border-radius: 6px;
 }
-.issue.note { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.issue::before {
+  content: ""; position: absolute; left: 11px; top: 15px;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--bad);
+}
+.issue.note {
+  border-color: color-mix(in srgb, var(--warn) 28%, transparent);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+.issue.note::before { background: var(--warn); }
 
 .foot { margin-top: auto; padding: 14px; border-top: 1px solid var(--line); }
 .foot p { margin: 0; font-size: 11.5px; line-height: 1.6; color: var(--muted); }
