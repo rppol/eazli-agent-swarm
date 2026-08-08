@@ -1,5 +1,10 @@
 # eazli agent swarm
 
+**[▶ Live studio](https://rppol.github.io/eazli-agent-swarm/)** — plan a room, swap
+any piece, see the engine's verdict. Static replay of real `app/geometry.py`
+output; run it locally with `make studio` to have the engine judge every edit live.
+
+
 A working multi-agent system that implements [eazli's](https://www.eazli.com) own
 published agent model — Zeina, Noura and Adam — against a real apartment floor plan and
 75 real amazon.sa listings.

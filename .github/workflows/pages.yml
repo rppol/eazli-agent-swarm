@@ -32,8 +32,14 @@ jobs:
           enable-cache: true
       - run: uv sync
 
-      # The catalogue index is needed because the exporter reads real products.
-      - run: PYTHONPATH=. uv run python ingest/build_catalog.py
+      # Both indexes. The exporter only reads products, but the gate below runs
+      # the full suite — and the retrieval tests need eazli_kb. Building only
+      # the catalogue here failed the gate on a missing collection rather than
+      # on anything real.
+      - name: Build indexes
+        run: |
+          PYTHONPATH=. uv run python ingest/build_kb.py
+          PYTHONPATH=. uv run python ingest/build_catalog.py
 
       # Never publish a site built from an engine that is failing its own tests.
       - name: Gate on the engine
