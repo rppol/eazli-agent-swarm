@@ -404,6 +404,11 @@ def candidates_for(
         if p.category == slot["category"]
         and p.usable
         and "implausible_price" not in p.flags
+        # `unclassified` means no pattern matched the title and the category is
+        # only what the search term claimed. Searching "wall mirror" returned
+        # three artist's easels, which were eligible to be hung on a wall as
+        # mirrors. A category nobody verified is not a category.
+        and "unclassified" not in p.flags
         and p.price_sar is not None
         and p.price_sar <= budget_left
     ]

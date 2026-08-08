@@ -213,7 +213,11 @@ CATEGORY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("mirror", re.compile(r"\bmirrors?\b", re.I)),
     ("wall_art", re.compile(r"wall art|canvas print|framed print|framed art|art print|wall decor|wall hanging|tapestry|macrame", re.I)),
     ("accessory", re.compile(r"table runner|cheesecloth|tablecloth|placemat|cushion cover|wall mount|mount stand|monitor light|screenbar|rolling cart", re.I)),
-    ("plant", re.compile(r"artificial (?:plant|tree)|faux (?:plant|tree)|potted (?:plant|tree)|silk plant", re.I)),
+    # One optional adjective between the qualifier and the noun. Sellers write
+    # "Artificial Olive Tree" and "Faux Fiddle Leaf Plant", and requiring the
+    # two words to be adjacent dropped every olive tree in the capture through
+    # to the search-term fallback.
+    ("plant", re.compile(r"(?:artificial|faux|potted|silk|fake)\s+(?:\w+\s+){0,2}(?:plant|tree)", re.I)),
     ("vase", re.compile(r"\bvases?\b", re.I)),
 ]
 

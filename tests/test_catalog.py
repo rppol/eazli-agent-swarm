@@ -921,3 +921,42 @@ class TestThePriceOutlierBaselineIsNotSkewedByMissingDimensions:
         p = next(x for x in parse_capture() if x.asin == "B0FG1849P3")
         assert p.price_sar > 180_000
         assert "implausible_price" in p.flags
+
+
+class TestAnUnmatchedTitleIsNotTakenOnTrust:
+    """`_classify` falls back to the search term when no pattern matches, and
+    that fallback was being treated as a fact.
+
+    Searching "wall mirror decorative" returned `B0G3X188XF`, an aluminium
+    artist's easel. Nothing in its title says mirror, so it was flagged
+    `unclassified` — and then planned as a mirror anyway, because a flag that
+    nothing acts on is decoration. Three easels were eligible to be hung on a
+    wall as mirrors.
+
+    The fix keeps them in the index (an agent must be able to find and dismiss
+    one) and out of recommendations, which is exactly how `implausible_price`
+    already behaves.
+    """
+
+    def test_an_easel_returned_by_a_mirror_search_is_not_recommendable(self):
+        from app.planner import candidates_for
+        easel = next(p for p in parse_capture() if p.asin == "B0G3X188XF")
+        assert "unclassified" in easel.flags
+        pool = candidates_for({"category": easel.category}, list(parse_capture()),
+                              100_000, [], None)
+        assert easel.asin not in {c.asin for c in pool}
+
+    def test_it_is_still_in_the_catalogue_to_be_dismissed(self):
+        assert any(p.asin == "B0G3X188XF" for p in parse_capture())
+
+
+class TestAnAdjectiveDoesNotHideAPlant:
+    """`artificial (plant|tree)` needs the two words adjacent, so every
+    "Artificial Olive Tree" in the capture fell through to the search-term
+    fallback and was flagged unclassified — six real plants, described exactly
+    as a seller would describe them."""
+
+    def test_an_artificial_olive_tree_classifies_as_a_plant(self):
+        p = next(x for x in parse_capture() if x.asin == "B0H4LVT6QB")
+        assert p.category == "plant"
+        assert "unclassified" not in p.flags
