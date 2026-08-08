@@ -496,6 +496,103 @@ def test_the_palette_has_one_definition():
         assert "const SWATCH" not in js and "const COLOR = {" not in js
 
 
+# --------------------------------------------------------------------------
+# telling one product from another in the render
+#
+# Measured against the capture: 31 usable items publish no colour, 67 publish
+# no material, and 22 sat in 9 groups that drew pixel-identically. The colour
+# fallback was the worst of it — a sofa with no published colour rendered
+# exactly like one that genuinely is that colour, which is a differentiation
+# failure and a claim nobody made.
+# --------------------------------------------------------------------------
+
+def test_material_changes_the_surface_not_just_the_word_in_the_panel():
+    """Every piece got one surface — roughness 0.72, metalness 0.02 — so two
+    grey sofas, one leather and one bouclé, were the same object on screen."""
+    import re
+    from pathlib import Path
+
+    from app.catalog import MATERIAL_WORDS
+
+    js = Path("app/static/viewer.js").read_text(encoding="utf-8")
+    block = re.search(r"const SURFACES = \{(.*?)\n\};", js, re.S)
+    assert block, "viewer.js must map the published material to a surface"
+    surfaces = {
+        name: {k: float(v) for k, v in re.findall(r"(\w+): ([\d.]+)", body)}
+        for name, body in re.findall(r"^\s*(\w+):\s*\{([^}]*)\}", block.group(1), re.M)
+    }
+
+    # Every word the parser can emit must land somewhere, or an item silently
+    # falls back to the same surface as an item that published nothing.
+    for word in MATERIAL_WORDS:
+        name = "boucle" if word == "bouclé" else word
+        assert name in surfaces, f"{name} is a material the catalogue publishes"
+
+    # Gloss is the difference you can see from across the room.
+    assert surfaces["leather"]["roughness"] < surfaces["linen"]["roughness"]
+    assert surfaces["marble"]["roughness"] < surfaces["boucle"]["roughness"]
+    assert surfaces["metal"]["metalness"] > surfaces["fabric"]["metalness"]
+    # "metal" and "steel" are two different published claims, and two otherwise
+    # identical beds differ by nothing else.
+    assert surfaces["metal"] != surfaces["steel"]
+
+
+def test_an_unpublished_colour_is_not_replaced_by_an_invented_one():
+    """31 usable items state no colour. Painting them in the role's colour
+    asserted a colour nobody published and made them indistinguishable from the
+    items that really are that colour. Deriving one from the ASIN would be the
+    same lie with an extra step."""
+    import re
+    from pathlib import Path
+
+    palette = Path("app/static/palette.js").read_text(encoding="utf-8")
+    viewer = Path("app/static/viewer.js").read_text(encoding="utf-8")
+    studio = Path("app/static/studio.js").read_text(encoding="utf-8")
+
+    unknown = re.search(r"UNKNOWN_COLOUR = '(#[0-9a-f]{6})'", palette)
+    assert unknown, "palette.js must define one colour for 'not published'"
+
+    roles = re.search(r"export const PALETTE = \{(.*?)\n\};", palette, re.S).group(1)
+    assert unknown.group(1) not in roles, "unknown must not be one of the real colours"
+
+    # The two places the fallback used to live.
+    assert "colourFor(item.role)" not in viewer
+    assert "PALETTE[i.role]" not in studio
+    # Nothing about how a piece looks may come from its id.
+    for name, js in (("viewer.js", viewer), ("studio.js", studio)):
+        body = "\n".join(l for l in js.splitlines()
+                         if not l.strip().startswith(("//", "*", "/*")))
+        assert not re.search(r"asin.*(?:colour|color|hue|hash)", body, re.I), name
+
+
+def test_the_legend_explains_what_an_unpublished_attribute_looks_like():
+    """A consistent treatment nobody can read is just another colour."""
+    from pathlib import Path
+
+    js = Path("app/static/studio.js").read_text(encoding="utf-8")
+    css = Path("app/static/studio.css").read_text(encoding="utf-8")
+    assert "$('#legend dl')" in js, "the note belongs in the existing legend"
+    assert "colour not published" in js and "material not published" in js
+    # The panel dot carries the same treatment as the object in the viewport.
+    assert ".swatch.unknown" in css
+
+
+def test_a_rug_without_a_published_material_is_not_given_a_weave():
+    """Five usable rugs are the same grey at the same 300x200 and state no
+    material between them. They are genuinely the same published object, so
+    they must keep drawing alike — fabricating a difference to break the tie
+    would be the same failure as fabricating a colour."""
+    import re
+    from pathlib import Path
+
+    js = Path("app/static/viewer.js").read_text(encoding="utf-8")
+    rug = re.search(r"role === 'rug'\) \{(.*?)\n  \} else \{", js, re.S).group(1)
+    # Every weave the rug branch draws is gated on the stated material.
+    for line in rug.splitlines():
+        if "weave(" in line and not line.strip().startswith(("//", "*")):
+            assert "s.weave" in line, f"a weave drawn without a stated material: {line}"
+
+
 def test_the_viewport_is_optional_scenery():
     """If three.js fails, the plan, verdicts and reasoning must still work."""
     from pathlib import Path

@@ -11,15 +11,13 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { hex, suggestionHex } from './palette.js';
+import { suggestionHex, unknownHex, unknownMarkHex } from './palette.js';
 
 const CM = 0.01;
 
 let scene, camera, renderer, controls, world, host;
 let room = null;
 const meshes = new Map();
-
-export const colourFor = hex;
 
 export function init(element) {
   host = element;
@@ -227,14 +225,7 @@ function placeItems(target, placed, roomCm) {
   // a marker on the floor would assert a location that does not exist.
   for (const item of placed) {
     const { w, d, h } = item.dims_cm;
-    // The product's own colour when the listing named one, the role's
-    // otherwise. Without this a black leather sofa and a greige bouclé sofa
-    // drew identically, so changing style changed the plan but never the
-    // picture.
-    const colour = item.colour_hex
-      ? parseInt(item.colour_hex.slice(1), 16)
-      : colourFor(item.role);
-    const group = furniture(item.role, w * CM, d * CM, h * CM, colour);
+    const group = furniture(item.role, w * CM, d * CM, h * CM, lookFor(item));
     const { x, z } = toWorld(item.x, item.y, w, d, roomCm);
     group.position.set(x, 0, z);
     group.userData.slot = item.slot_id;
@@ -354,13 +345,86 @@ function slab(w, d, h, mat) {
 
 function at(mesh, x, y, z) { mesh.position.set(x, y, z); return mesh; }
 
-function furniture(role, w, d, h, colour) {
+/* Material -> surface.
+ *
+ * `PlacedItem.material` is the seller's own word for what the thing is made of,
+ * and until now the render threw it away: every piece got one surface,
+ * roughness 0.72 / metalness 0.02. So two grey sofas — one leather, one bouclé —
+ * were the same object on screen, and the panel's one-word "leather" was the
+ * only place the difference existed. 22 items in the capture sat in 9 groups
+ * that were pixel-identical; several of those groups differ only by material.
+ *
+ * `light` and `sat` are small HSL nudges applied to the PUBLISHED colour, not
+ * substitutes for it. Gloss alone is weak under a hemisphere light on a matte
+ * dark ground, and the nudges are derived from the stated material rather than
+ * invented: velvet's pile really does read darker and richer than the same dye
+ * on linen, marble really is brighter than the wall behind it. They stay under
+ * a tenth in either direction so the listing's colour is still the colour.
+ *
+ * `weave` is the rug case, and only rugs use it — see the `rug` branch.
+ */
+const SURFACES = {
+  leather:     { roughness: 0.26, metalness: 0.08, light: 0.02 },
+  leatherette: { roughness: 0.34, metalness: 0.06, light: 0.02 },
+  velvet:      { roughness: 0.58, metalness: 0.00, sat: 0.10, light: -0.05, weave: 'pile' },
+  linen:       { roughness: 0.97, metalness: 0.00, flat: true, sat: -0.06, light: 0.04, weave: 'flat' },
+  fabric:      { roughness: 0.88, metalness: 0.00, weave: 'flat' },
+  boucle:      { roughness: 1.00, metalness: 0.00, flat: true, sat: -0.04, light: 0.05, weave: 'pile' },
+  bouclette:   { roughness: 1.00, metalness: 0.00, flat: true, sat: -0.04, light: 0.05, weave: 'pile' },
+  marble:      { roughness: 0.14, metalness: 0.06, sat: -0.05, light: 0.08 },
+  ceramic:     { roughness: 0.22, metalness: 0.02, light: 0.05 },
+  glass:       { roughness: 0.04, metalness: 0.10, light: 0.10, opacity: 0.34 },
+  rattan:      { roughness: 0.92, metalness: 0.00, flat: true, light: 0.03, weave: 'woven' },
+  bamboo:      { roughness: 0.86, metalness: 0.00, flat: true, light: 0.05, weave: 'woven' },
+  // Three different words for metal in the capture, and two beds differ by
+  // nothing else — "metal" vs "steel" on otherwise identical listings. They are
+  // different published claims, so they get different surfaces.
+  metal:       { roughness: 0.34, metalness: 0.85 },
+  steel:       { roughness: 0.18, metalness: 0.92, light: 0.06 },
+  iron:        { roughness: 0.56, metalness: 0.72, light: -0.06 },
+  wood:        { roughness: 0.70, metalness: 0.02 },
+  oak:         { roughness: 0.60, metalness: 0.02, sat: 0.03, light: 0.06 },
+  walnut:      { roughness: 0.46, metalness: 0.03, sat: 0.05, light: -0.05 },
+  beech:       { roughness: 0.66, metalness: 0.02, light: 0.08 },
+};
+
+/* 67 usable items publish no material. This is the surface everything used to
+   get; it is deliberately unremarkable, and the legend says what it means. */
+const DEFAULT_SURFACE = { roughness: 0.72, metalness: 0.02 };
+
+/** Everything the render is allowed to say about how an item looks. */
+function lookFor(item) {
+  return {
+    colour: item.colour_hex ? parseInt(item.colour_hex.slice(1), 16) : unknownHex,
+    known: Boolean(item.colour_hex),
+    surface: SURFACES[item.material] ?? DEFAULT_SURFACE,
+  };
+}
+
+/** The published colour, shaded for the part being drawn, on the published
+ *  material's surface. `dl`/`ds` are the piece's own internal shading — a
+ *  cushion lighter than its frame — and are the same offsets every piece used
+ *  before materials existed. */
+function surfaceMat(colour, s, dl = 0, ds = 0) {
+  const m = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(colour).offsetHSL(0, (s.sat ?? 0) + ds, (s.light ?? 0) + dl),
+    roughness: s.roughness,
+    metalness: s.metalness,
+    flatShading: Boolean(s.flat),
+  });
+  if (s.opacity != null) { m.transparent = true; m.opacity = s.opacity; }
+  return m;
+}
+
+function furniture(role, w, d, h, look) {
   const g = new THREE.Group();
-  const body = new THREE.MeshStandardMaterial({ color: colour, roughness: 0.72, metalness: 0.02 });
-  const soft = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(colour).offsetHSL(0, -0.04, 0.07), roughness: 0.85 });
-  const dark = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(colour).offsetHSL(0, 0.02, -0.16), roughness: 0.6 });
+  const s = look.surface;
+  const colour = look.colour;
+  const body = surfaceMat(colour, s);
+  const soft = surfaceMat(colour, s, 0.07, -0.04);
+  const dark = surfaceMat(colour, s, -0.16, 0.02);
+  // Feet, handles and lamp poles are hardware, not the material the listing
+  // named, so they keep their own fixed surface.
   const metal = new THREE.MeshStandardMaterial({ color: 0x2f3742, roughness: 0.45, metalness: 0.5 });
 
   const legs = (inset, legH, thick, mat) => {
@@ -410,10 +474,16 @@ function furniture(role, w, d, h, colour) {
       0, h * 0.01, 0));                                                              // base
     g.add(at(new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, poleH, 12), metal),
       0, poleH / 2, 0));                                                             // pole
+    // The shade takes the published material like everything else — a linen
+    // drum and a glass globe were the same cone before — and keeps the warm
+    // glow that says the lamp is a light rather than a bollard.
+    const shadeMat = surfaceMat(colour, s);
+    shadeMat.side = THREE.DoubleSide;
+    shadeMat.emissive = new THREE.Color(0xffe6a8);
+    shadeMat.emissiveIntensity = 0.5;
     const shade = new THREE.Mesh(
       new THREE.CylinderGeometry(Math.min(w, d) * 0.44, Math.min(w, d) * 0.62, shadeH, 28, 1, true),
-      new THREE.MeshStandardMaterial({ color: colour, roughness: 0.9, side: THREE.DoubleSide,
-                                       emissive: 0xffe6a8, emissiveIntensity: 0.5 }));
+      shadeMat);
     g.add(at(shade, 0, poleH + shadeH / 2, 0));
   } else if (role === 'bed') {
     g.add(at(slab(w, d, h * 0.34, dark), 0, h * 0.17, 0));                           // base
@@ -430,13 +500,104 @@ function furniture(role, w, d, h, colour) {
       g.add(at(slab(0.02, d * 0.04, h * 0.1, metal), s * w * 0.06, h * 0.52, d / 2)); // handles
     }
   } else if (role === 'rug') {
-    g.add(at(slab(w, d, Math.max(h, 0.012), soft), 0, Math.max(h, 0.012) / 2, 0));
-    g.add(at(slab(w * 0.9, d * 0.86, 0.002, dark), 0, Math.max(h, 0.012) + 0.001, 0)); // border
+    // The worst tie in the catalogue: five usable rugs, all #98a0aa, all
+    // ~300x200, all drawn as one smooth slab. A rug's material IS its weave, so
+    // where the listing states one it changes the surface you would run a hand
+    // over — a cut pile is corrugated, a flat weave is ribbed, a woven natural
+    // fibre is cross-hatched. The five greys state no material between them, so
+    // they still draw alike: they are genuinely the same published object and
+    // inventing a difference would be the lie this file exists to avoid.
+    const t = Math.max(h, 0.012);
+    if (s.weave === 'pile') {
+      // Rows carved out of the top 45% of the slab. The pile reads as depth
+      // without the rug growing a millimetre past the height that was verified.
+      g.add(at(slab(w, d, t * 0.55, soft), 0, t * 0.275, 0));
+      const rows = Math.min(18, Math.max(6, Math.round(d / 0.16)));
+      for (let i = 0; i < rows; i++) {
+        g.add(at(slab(w * 0.99, (d / rows) * 0.6, t * 0.45, body),
+          0, t * 0.775, -d / 2 + (d / rows) * (i + 0.5)));
+      }
+    } else {
+      g.add(at(slab(w, d, t, soft), 0, t / 2, 0));
+      const border = slab(w * 0.9, d * 0.86, 0.002, dark);
+      border.userData.decal = true;
+      g.add(at(border, 0, t + 0.001, 0));
+      if (s.weave) g.add(weave(w, d, t, s.weave, dark.color));
+    }
   } else {
     g.add(at(slab(w, d, h, body), 0, h / 2, 0));
   }
 
-  g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  g.traverse((o) => {
+    if (!o.isMesh) return;
+    // A 2 mm decal lying on the face it decorates casts a shadow back onto that
+    // face, and the shadow map resolves the near-coplanar pair as concentric
+    // arcs. On a rug that noise read as part of the unknown-colour hatch beside
+    // it, which is the one thing that treatment cannot afford. Decals light,
+    // they never cast.
+    o.castShadow = !o.userData.decal;
+    o.receiveShadow = true;
+  });
+  // Drawn last so the envelope outline is the outermost thing on the piece.
+  if (!look.known) g.add(unpublishedColour(w, d, h));
+  return g;
+}
+
+/** Ribs or a cross-hatch on a flat weave, so a linen rug and a rattan one are
+ *  not the same rectangle. Lines, not geometry: a rug is 2 cm tall and there is
+ *  no room inside it to model a weave, and lines cost nothing. */
+function weave(w, d, y, kind, colour) {
+  const pts = [];
+  const step = Math.max(Math.min(w, d) / 12, 0.06);
+  for (let x = -w / 2 + step; x < w / 2; x += step) pts.push(x, y, -d / 2, x, y, d / 2);
+  if (kind === 'woven') {
+    for (let z = -d / 2 + step; z < d / 2; z += step) pts.push(-w / 2, y, z, w / 2, y, z);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+    color: colour, transparent: true, opacity: 0.5 }));
+}
+
+/* "This listing publishes no colour", drawn rather than written.
+ *
+ * 31 usable items state none. Painting them in the role's colour asserted a
+ * colour nobody published and made them indistinguishable from the items that
+ * really are that colour, so they get a treatment instead of a hue: the flat
+ * slate from palette.js, a wireframe on the exact w x d x h the engine verified,
+ * and a diagonal hatch on one face. Nothing here is derived from the ASIN or
+ * from anything else the listing did not say.
+ *
+ * The wireframe sits precisely on the envelope. The hatch is a decal and is
+ * lifted 0.6 mm off the face it lies on so it does not z-fight with it — the
+ * same trick as the floor grid at +4 mm and the rug border at +1 mm, and three
+ * orders of magnitude below the centimetre the dimensions are stated in.
+ */
+function unpublishedColour(w, d, h) {
+  const g = new THREE.Group();
+  const mat = new THREE.LineBasicMaterial({
+    color: unknownMarkHex, transparent: true, opacity: 0.75 });
+
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, d)), mat);
+  edges.position.y = h / 2;
+  g.add(edges);
+
+  // A rug has no front face worth hatching, so hatch its top instead.
+  const flat = h < 0.15;
+  const [u, v] = flat ? [w, d] : [w, h];
+  const step = Math.max((u + v) / 18, 0.05);
+  const pts = [];
+  for (let c = -u / 2 + step; c < v + u / 2; c += step) {
+    // The 45-degree line y = x + c, clipped to the u x v face.
+    const a = Math.max(-u / 2, -c), b = Math.min(u / 2, v - c);
+    if (b <= a) continue;
+    if (flat) pts.push(a, h + 0.0006, a + c - v / 2, b, h + 0.0006, b + c - v / 2);
+    else      pts.push(a, a + c, d / 2 + 0.0006, b, b + c, d / 2 + 0.0006);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  g.add(new THREE.LineSegments(geo, mat));
   return g;
 }
 

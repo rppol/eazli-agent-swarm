@@ -10,7 +10,7 @@
  * the plan and its reasoning from painting.
  */
 
-import { PALETTE } from './palette.js';
+import { UNKNOWN_COLOUR } from './palette.js';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -166,16 +166,33 @@ function decisionHtml(i) {
   </div>`;
 }
 
+/** The panel's dot has to say the same thing the render does.
+ *
+ * It used to fall back to the role's colour, so an item with no published
+ * colour got a confident blue dot beside a confident blue sofa and there was
+ * nowhere on the page you could tell that nobody had stated one. Unknown gets
+ * the hatched slate instead — the same treatment the piece carries in the
+ * viewport, so the two are learnable as one thing. `background-color`, not the
+ * `background` shorthand, because the shorthand would wipe the CSS hatch. */
+function swatch(i) {
+  return i.colour_hex
+    ? `<span class="swatch" style="background-color:${i.colour_hex}"
+             title="colour published by the listing"></span>`
+    : `<span class="swatch unknown" style="background-color:${UNKNOWN_COLOUR}"
+             title="the listing publishes no colour"></span>`;
+}
+
 function paintPanel(plan) {
   $('#items').innerHTML = plan.placed.map((i) => `
     <div class="item" data-slot="${i.slot_id}" data-role="${i.role}">
       <div class="item-head">
-        <span class="swatch" style="background:${i.colour_hex ?? PALETTE[i.role] ?? PALETTE.other}"></span>
+        ${swatch(i)}
         <div class="item-main">
           <div class="slot">${i.slot_id.replace(/_/g, ' ')}</div>
           <div class="name">${esc(i.title)}</div>
-          <div class="meta">${i.dims_cm.w}\u00d7${i.dims_cm.d}\u00d7${i.dims_cm.h} cm${
-            i.material ? ` \u00b7 ${esc(i.material)}` : ''}
+          <div class="meta">${i.dims_cm.w}\u00d7${i.dims_cm.d}\u00d7${i.dims_cm.h} cm \u00b7 ${
+            i.material ? esc(i.material) : '<i class="unstated">material not published</i>'}${
+            i.colour_hex ? '' : ' \u00b7 <i class="unstated">colour not published</i>'}
             \u00b7 <span title="How the dimensions were obtained from the listing">${i.dims_confidence}</span></div>
           ${accessBadges(i.access)}
         </div>
@@ -478,7 +495,31 @@ async function runPlan() {
   }
 }
 
+/* Two more rows for the legend, appended here rather than written into
+ * index.html, because they describe what the RENDER does with an attribute the
+ * listing left out — and the render is JavaScript. A viewer who has learned
+ * these two rows can read an unknown off the picture without opening the panel,
+ * which is the whole point of giving it a consistent look.
+ */
+function explainMissingAttributes() {
+  const dl = $('#legend dl');
+  if (!dl) return;
+  dl.insertAdjacentHTML('beforeend', `
+    <dt><span class="swatch unknown" style="background-color:${UNKNOWN_COLOUR}"></span>colour
+      not published</dt>
+    <dd>The listing states no colour, so none is invented. The piece is drawn in
+      this flat slate with a wireframe on its exact verified size and a diagonal
+      hatch across one face. The dimensions are still measured; only the colour
+      is unknown.</dd>
+    <dt>material not published</dt>
+    <dd>No stated material, so the surface stays plainly matte. Where a material
+      <em>is</em> stated it is drawn — leather glossy, linen and bouclé matte,
+      marble bright, metal reflective, glass see-through, and a rug's weave from
+      its fibre.</dd>`);
+}
+
 async function boot() {
+  explainMissingAttributes();
   const home = await api('/home/units');
   const { units } = home;
   state.assumptions = home.assumptions || [];

@@ -129,6 +129,22 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 372px; min-height: 0; 
 .item-head { display: grid; grid-template-columns: 10px 1fr auto; gap: 10px; align-items: start; }
 .item .swatch { width: 10px; height: 10px; border-radius: 3px; margin-top: 4px; }
 
+/* "Colour not published" — the panel's half of the treatment the viewport
+   draws. A plain dot in the role's colour used to sit here, which claimed a
+   colour the listing never stated; the hatch says the square is a placeholder.
+   The stripe and the base colour both come from palette.js (the base arrives as
+   an inline background-color), so the dot and the object it labels cannot
+   drift apart. */
+.swatch.unknown {
+  background-image: repeating-linear-gradient(
+    45deg, rgba(195, 202, 212, .9) 0 1px, transparent 1px 3px);
+  box-shadow: inset 0 0 0 1px rgba(195, 202, 212, .55);
+}
+
+/* An attribute the listing does not publish, said in words next to the size it
+   does publish. Muted and italic so it reads as an absence, not a value. */
+.meta .unstated { color: #6f7b88; font-style: italic; }
+
 .actions { display: flex; gap: 14px; margin: 8px 0 0 20px; }
 button.link {
   background: none; border: none; padding: 0; font-size: 12px;
@@ -263,6 +279,10 @@ code { font: 11px var(--mono); background: var(--panel-2); padding: 1px 4px; bor
 }
 #legend dt:first-child { margin-top: 0; }
 #legend dd { margin: 2px 0 0; color: var(--muted); }
+#legend dt .swatch {
+  display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+  margin-right: 6px; vertical-align: baseline;
+}
 
 .all-legs[hidden] { display: none; }
 .all-legs { margin-top: 6px; color: var(--muted); }

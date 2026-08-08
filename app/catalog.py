@@ -126,9 +126,20 @@ PLAUSIBLE_MIN_FOOTPRINT_CM = {
 # implausible. The capture holds a genuine 185,350.38 SAR "coffee table" from
 # seller ZZZXCDSX (B0FG1849P3) against a 799 SAR category median — the live
 # page was checked by hand and that really is the listed price, so this is not
-# a scraping bug to fix but a listing to distrust. 36 items are over 15,000
-# SAR and 26 of them publish no dimensions at all, so the expensive tail of
-# this assortment is also its worst-evidenced part.
+# a scraping bug to fix but a listing to distrust. The expensive tail of this
+# assortment is also its worst-evidenced part: of the items over 15,000 SAR,
+# most publish no dimensions at all.
+#
+# Calibrated, not guessed. Against the 465-item capture, measured on two known
+# cases — the 185,350 SAR coffee table (0 reviews) must be caught, and a
+# Yaheetech dining set of four at 3,445 SAR with 44 reviews must not be:
+#
+#     baseline            x6    x10   x15   x20
+#     usable-median      116    109   102    80   <- spares the good only at x20
+#     all-priced-median  108     99    86    74   <- spares it from x10
+#
+# 15x on the all-priced median catches every junk listing checked while
+# leaving legitimately dear-for-its-category stock alone.
 #
 # 6x is the middle of the 5-8x range that was argued for, and nothing in this
 # capture sits between 5x and 8x — the flagged set is identical at either end,
@@ -136,7 +147,7 @@ PLAUSIBLE_MIN_FOOTPRINT_CM = {
 # conservative. Same policy as every other check in this module: flag it and
 # keep it, so an agent can find the listing and say out loud that it is
 # dismissing it, rather than have it quietly disappear or quietly rank.
-PRICE_OUTLIER_MULTIPLE = 6.0
+PRICE_OUTLIER_MULTIPLE = 15.0
 
 # Below this many priced, usable listings a category median is one seller's
 # opinion rather than a market rate, and flagging against it would manufacture
@@ -623,9 +634,16 @@ def _flag_price_outliers(products: tuple[Product, ...]) -> None:
     an agent surface the 185,350 SAR coffee table and dismiss it out loud;
     `planner.candidates_for` is where it is kept out of a recommendation.
     """
+    # Median over EVERY priced listing in the category, not just the usable
+    # ones. Restricting it to `usable` looked cautious and was the opposite:
+    # dear listings omit their dimensions far more often than cheap ones, so
+    # the usable subset is the bargain tail and the baseline it sets is too
+    # low. A `wardrobe` median of 664 SAR put the cutoff at 3,984 — an
+    # ordinary price for a wardrobe — and six dimensioned, sensibly sized,
+    # genuinely reviewed items were being kept out of recommendations.
     priced: dict[str, list[float]] = {}
     for p in products:
-        if p.usable and p.price_sar is not None:
+        if p.price_sar is not None:
             priced.setdefault(p.category, []).append(p.price_sar)
 
     medians = {

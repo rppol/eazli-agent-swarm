@@ -807,12 +807,16 @@ class TestPricePlausibility:
         assert any("implausible_price" in p.flags for p in parse_capture())
 
     def test_a_category_with_too_thin_a_sample_is_not_judged(self):
-        """A median over two usable prices is not a market rate, and flagging
-        against it would invent an outlier out of a small sample."""
+        """A median over two prices is not a market rate, and flagging against
+        it would invent an outlier out of a small sample.
+
+        Counts every priced listing, matching the baseline the check itself
+        uses. It used to count only `usable` ones, which stopped agreeing with
+        the implementation the moment that baseline widened."""
         from app.catalog import MIN_PRICED_SAMPLE_FOR_MEDIAN
         import collections
         counts = collections.Counter(
-            p.category for p in parse_capture() if p.usable and p.price_sar)
+            p.category for p in parse_capture() if p.price_sar)
         for p in parse_capture():
             if counts[p.category] < MIN_PRICED_SAMPLE_FOR_MEDIAN:
                 assert "implausible_price" not in p.flags, p.asin
@@ -890,3 +894,30 @@ class TestPriceOutliersYieldToRealEvidence:
         junk = next(p for p in parse_capture() if p.asin == "B0FG1849P3")
         assert junk.reviews == 0
         assert "implausible_price" in junk.flags
+
+
+class TestThePriceOutlierBaselineIsNotSkewedByMissingDimensions:
+    """The cutoff was a multiple of the median over *usable* listings only.
+
+    That subset skews cheap, because dear listings omit their dimensions far
+    more often than cheap ones do — so the baseline was set by the bargain
+    tail and the cutoff landed inside the normal range. A wardrobe category
+    whose usable median was 664 SAR called anything over 3,984 implausible,
+    which is an ordinary price for a wardrobe. Six dimensioned, sensibly-sized,
+    genuinely-reviewed items were being kept out of recommendations by it.
+
+    Taking the median over every priced listing in the category removes the
+    bias without loosening what the check is for.
+    """
+
+    def test_a_real_dining_set_priced_above_a_single_chair_is_not_implausible(self):
+        """Yaheetech dining chairs, set of 4, 3,445 SAR, 44 reviews. The
+        `dining_chairs` median is set by single chairs, so a set of four looks
+        like an outlier against it and is not one."""
+        p = next(x for x in parse_capture() if x.asin == "B0C4KTZ1H6")
+        assert "implausible_price" not in p.flags
+
+    def test_the_grey_market_coffee_table_is_still_caught(self):
+        p = next(x for x in parse_capture() if x.asin == "B0FG1849P3")
+        assert p.price_sar > 180_000
+        assert "implausible_price" in p.flags
