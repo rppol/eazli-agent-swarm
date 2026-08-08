@@ -83,6 +83,38 @@ RULES: dict[str, dict] = {
                 "table that satisfies every clearance but sits out of reach is "
                 "legal and useless.",
     },
+    "tv_sightline": {
+        "value_cm": 120,
+        "text": "A television has to be in front of the seating rather than off "
+                "to one side: the console and the seat must share some of the "
+                "same lateral band, and sit at least 120cm apart. 120cm is the "
+                "practical minimum viewing distance — no screen diagonal is "
+                "published anywhere in this catalogue, so no diagonal-based "
+                "rule could be honest about where it got its number.",
+    },
+    "rug_anchors_seating": {
+        "value_cm": 15,
+        "text": "A rug is what makes a sofa, a chair and a table read as one "
+                "group, so it has to lie under that group: at least 15% shared "
+                "area with the seating group's footprint. Deliberately loose — "
+                "it catches a rug that is disconnected from the room, not "
+                "whether the front legs are on it.",
+    },
+    "lamp_within_reach_of_seating": {
+        "value_cm": 75,
+        "text": "At least one floor lamp has to stand within 75cm of somewhere "
+                "you sit or lie down to read — a sofa, an armchair or a bed. "
+                "The same 75cm as the reach clearance, because it is the same "
+                "measurement: an arm's length from where the person is. Only "
+                "one; a second lamp placed elsewhere is a lighting scheme.",
+    },
+    "seat_has_a_focal_point": {
+        "value_cm": 300,
+        "text": "An armchair has to be turned toward something — the sofa, the "
+                "coffee table or the television — within about 3 metres. A "
+                "chair angled at open floor satisfies every clearance in this "
+                "engine and is still nobody's seat.",
+    },
 }
 
 WALKWAY_PRIMARY_CM = RULES["walkway_primary"]["value_cm"]
@@ -201,6 +233,39 @@ FRONT_CLEARANCE_BY_ROLE: dict[str, float] = {
 BEDSIDE_REACH_CM = RULES["bedside_reach"]["value_cm"]
 BED_ACCESS_CM = RULES["bed_access"]["value_cm"]
 BEDSIDE_ROLES = {"side_table", "nightstand", "table"}
+
+TV_VIEWING_MIN_CM = RULES["tv_sightline"]["value_cm"]
+RUG_ANCHOR_MIN_FRACTION = RULES["rug_anchors_seating"]["value_cm"] / 100.0
+FOCAL_POINT_MAX_CM = RULES["seat_has_a_focal_point"]["value_cm"]
+
+# Deliberately the same number as `reach_clearance` rather than a new one. A
+# lamp you cannot reach from the seat is the same failure as a drawer you
+# cannot reach from in front of it, and inventing a second 75cm would have
+# invited the two to drift apart.
+LAMP_REACH_CM = RULES["reach_clearance"]["value_cm"]
+
+# Who is allowed to watch the television. NOT every seat: nobody arranges a
+# dining chair around a screen, and counting one would let a console satisfy
+# the rule against furniture that is not facing it.
+TV_AUDIENCE_ROLES = {"sofa", "armchair"}
+
+# What a rug has to lie under. A dining set is a separate zone of the same
+# room with its own rug, if any, so it is not part of this group.
+SEATING_GROUP_ROLES = {"sofa", "armchair", "coffee_table"}
+
+# Where a person sits or lies down to read. The bed is in here on purpose: a
+# lamp 36cm off the head of the bed is a bedside reading light, which is the
+# canonical case for this rule rather than an exception to it. Scoping the rule
+# to sofas and armchairs alone would also have deleted furniture — measured
+# across every bedroom in the home, there is NO valid armchair position within
+# 75cm of the lamp the planner places at priority 3, so the premium tier's
+# armchair would have come back "could not be placed anywhere in the room".
+LAMP_REACH_ROLES = {"sofa", "armchair", "bed"}
+
+# What an armchair is allowed to be facing. The sofa is the anchor everything
+# else orients around, so it is a target and never a subject: asking the first
+# piece placed to face something would make an empty room unfurnishable.
+FOCAL_ROLES = {"sofa", "coffee_table", "tv_console"}
 
 
 def front_clearance_for(role: str | None) -> float | None:
@@ -581,7 +646,14 @@ def validate_layout(room: Room, placements: Sequence[Placement]) -> Verdict:
 
     # Usability, after geometry. Everything above asks whether the boxes fit;
     # these ask whether a person could use what is in them.
-    ergonomic = _bedside_within_reach(placements) + _bed_can_be_got_into(room, placements)
+    ergonomic = (
+        _bedside_within_reach(placements)
+        + _bed_can_be_got_into(room, placements)
+        + _tv_has_a_sightline(placements)
+        + _rug_anchors_seating(placements)
+        + _lamp_within_reach_of_seating(placements)
+        + _seat_has_a_focal_point(placements)
+    )
     if ergonomic:
         reasons.extend(ergonomic)
         statuses.append("fail")
@@ -650,6 +722,190 @@ def _bed_can_be_got_into(room: Room, placements) -> list[str]:
             out.append(
                 f"{bed.item_id} has only {best:.0f}cm clear on its most open long "
                 f"side. Getting into bed needs about {BED_ACCESS_CM:.0f}cm."
+            )
+    return out
+
+
+def _span_overlap(a: tuple, b: tuple, axis: Literal["x", "y"]) -> float:
+    """How much of the same lateral band two footprints occupy.
+
+    Zero means they are side by side rather than one in front of the other,
+    which is the difference between a television you look at and a television
+    you look past.
+    """
+    i = 0 if axis == "x" else 1
+    return max(0.0, min(a[i + 2], b[i + 2]) - max(a[i], b[i]))
+
+
+def _lateral_axis(facing: Wall) -> Literal["x", "y"]:
+    """The axis across an item's line of sight. Something facing north or south
+    is lined up with what is in front of it on x."""
+    return "x" if facing in ("N", "S") else "y"
+
+
+def _seating_group_box(placements) -> tuple[float, float, float, float] | None:
+    """The rectangle the sofa, the armchairs and the coffee table sit inside.
+
+    A bounding box rather than a union of footprints, because that is what a
+    rug is actually being asked to cover: the arrangement, including the floor
+    between the sofa and the table, not the silhouette of the furniture.
+    """
+    boxes = [p.footprint() for p in placements
+             if p.resolved_role() in SEATING_GROUP_ROLES and p.dims.known]
+    if not boxes:
+        return None
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def _tv_has_a_sightline(placements) -> list[str]:
+    """A television has to be in front of the seating, not off to one side.
+
+    `_positions` had no tv_console branch, so a console fell through to the
+    generic "hug a wall, then nearest the origin" ordering and was placed with
+    no knowledge of where the sofa was. unit01/living_dining/8000/warm+minimal
+    put a 40cm console at x=0-40 against a sofa spanning x=120-293 — zero
+    shared band, so you would be looking 80cm to the side of the screen — and
+    it returned `pass`, in 15 of 18 living/dining combinations.
+
+    Both halves are needed. Overlap alone allows a console 90cm from the sofa
+    front, which is a screen you sit under rather than watch; distance alone
+    allows the 80cm-to-the-side case above.
+    """
+    audience = [p for p in placements
+                if p.resolved_role() in TV_AUDIENCE_ROLES and p.dims.known]
+    if not audience:
+        return []                    # a console in an unfurnished room is not this
+    out: list[str] = []
+    for tv in placements:
+        if tv.resolved_role() != "tv_console" or not tv.dims.known:
+            continue
+        box = tv.footprint()
+        axis = _lateral_axis(tv.facing)
+        aligned = [s for s in audience if _span_overlap(box, s.footprint(), axis) > 0]
+        if not aligned:
+            nearest = min(audience, key=lambda s: _gap_between(box, s.footprint()))
+            out.append(
+                f"{tv.item_id} shares no sightline with {nearest.item_id}: their "
+                f"footprints do not overlap on the {axis} axis at all, so the "
+                f"screen sits off to one side of the seat rather than in front "
+                f"of it. {RULES['tv_sightline']['text']}"
+            )
+            continue
+        far = max(_gap_between(box, s.footprint()) for s in aligned)
+        if far < TV_VIEWING_MIN_CM:
+            out.append(
+                f"{tv.item_id} is only {far:.0f}cm from the seating it faces. "
+                f"{RULES['tv_sightline']['text']}"
+            )
+    return out
+
+
+def _rug_anchors_seating(placements) -> list[str]:
+    """A rug has to lie under the group it is there to tie together.
+
+    Same root cause: no rug branch in `_positions`, so a 120x120cm rug went to
+    the origin corner. In unit01/living_dining/8000/warm+minimal it met the
+    sofa exactly at x=120 — touching along a line, sharing no area — while the
+    seating group ran from x=120 to x=293. 12 of 194 generated rugs shared
+    exactly 0% of their area with the group they were bought for.
+
+    Measured against the SMALLER of the two areas so that neither a small rug
+    beside a large group nor a large rug under a small group is judged by the
+    other one's size.
+    """
+    group = _seating_group_box(placements)
+    if group is None:
+        return []                    # a rug in a bedroom answers to nothing here
+    gx0, gy0, gx1, gy1 = group
+    group_area = (gx1 - gx0) * (gy1 - gy0)
+    out: list[str] = []
+    for rug in placements:
+        if rug.resolved_role() != "rug" or not rug.dims.known:
+            continue
+        box = rug.footprint()
+        rug_area = (box[2] - box[0]) * (box[3] - box[1])
+        smaller = min(rug_area, group_area)
+        if smaller <= 0:
+            continue
+        shared = _span_overlap(box, group, "x") * _span_overlap(box, group, "y")
+        fraction = shared / smaller
+        if fraction < RUG_ANCHOR_MIN_FRACTION:
+            out.append(
+                f"{rug.item_id} covers {fraction * 100:.0f}% of the seating group "
+                f"it is meant to anchor, against a {RUG_ANCHOR_MIN_FRACTION * 100:.0f}% "
+                f"minimum. {RULES['rug_anchors_seating']['text']}"
+            )
+    return out
+
+
+def _lamp_within_reach_of_seating(placements) -> list[str]:
+    """One floor lamp has to be within reach of somewhere you sit.
+
+    unit01/living_dining/30000/industrial+mid_century placed its accent lamp
+    95cm off the end of the sofa and its reading lamp 446cm from the nearest
+    seat: two lights in a room, neither of them lighting anybody. 73 of 107
+    generated lamps stood more than 90cm from any seat.
+
+    Stated over the room rather than per lamp on purpose. `_positions`
+    deliberately spreads twins apart so the premium tier's second lamp does not
+    stand 6cm from the first, and a per-lamp rule would fight that: an accent
+    lamp in the far corner is legitimate exactly as long as something else in
+    the room is doing the reading light's job.
+    """
+    lamps = [p for p in placements
+             if p.resolved_role() == "floor_lamp" and p.dims.known]
+    seats = [p for p in placements
+             if p.resolved_role() in LAMP_REACH_ROLES and p.dims.known]
+    if not lamps or not seats:
+        return []
+    nearest = min(_gap_between(l.footprint(), s.footprint())
+                  for l in lamps for s in seats)
+    if nearest <= LAMP_REACH_CM:
+        return []
+    return [
+        f"The nearest floor lamp is {nearest:.0f}cm from anywhere you could sit "
+        f"or lie down, so none of the {len(lamps)} in this room lights a seat. "
+        f"{RULES['lamp_within_reach_of_seating']['text']}"
+    ]
+
+
+def _seat_has_a_focal_point(placements) -> list[str]:
+    """An armchair has to be turned toward the group, not at open floor.
+
+    `_positions` pulls an armchair's POSITION toward the sofa but never inspects
+    `facing`, so among equally close candidates it took whichever facing sorted
+    first. unit01/living_dining/30000/industrial+mid_century produced a chair at
+    x=280-335 facing south down 506cm of empty floor, with the sofa ending at
+    x=273.8 — outside its band by 6cm. 59 generated armchairs faced nothing.
+
+    Scoped to the armchair. The sofa is the anchor the rest of the room orients
+    around, and requiring it to face something would make the first piece
+    placed in an empty room impossible.
+    """
+    targets = [p for p in placements
+               if p.resolved_role() in FOCAL_ROLES and p.dims.known]
+    if not targets:
+        return []                    # nothing in the room to look at yet
+    out: list[str] = []
+    for chair in placements:
+        if chair.resolved_role() != "armchair" or not chair.dims.known:
+            continue
+        box = chair.footprint()
+        axis = _lateral_axis(chair.facing)
+        seen = [
+            t for t in targets
+            if t is not chair
+            and _is_in_front(chair, t)
+            and _span_overlap(box, t.footprint(), axis) > 0
+            and _gap_between(box, t.footprint()) <= FOCAL_POINT_MAX_CM
+        ]
+        if not seen:
+            out.append(
+                f"{chair.item_id} faces {chair.facing} into open floor: nothing "
+                f"it could be turned toward lies in that band within "
+                f"{FOCAL_POINT_MAX_CM:.0f}cm. "
+                f"{RULES['seat_has_a_focal_point']['text']}"
             )
     return out
 

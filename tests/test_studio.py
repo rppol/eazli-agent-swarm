@@ -813,8 +813,12 @@ const stub = new Proxy(function () {}, {
 });
 globalThis.document = stub;
 globalThis.addEventListener = () => {};
-const { agentLogHtml, briefHtml } = await import('./studio.mjs');
-const plan = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const { agentLogHtml, briefHtml, flatten } = await import('./studio.mjs');
+// `flatten` is what render() runs before anything downstream sees the plan,
+// and it is a no-op on a single room. Going through it here means a whole-flat
+// plan reaches the builders in the shape the page actually hands them, rather
+// than a second flattening written beside it that can drift.
+const plan = flatten(JSON.parse(readFileSync(process.argv[2], 'utf8')));
 const ctx = JSON.parse(process.argv[3]);
 process.stdout.write(JSON.stringify({
   log: agentLogHtml(plan, ctx),
@@ -915,6 +919,187 @@ def test_the_log_differs_between_configurations(run_studio):
     a, b = _exported_plans("unit01__living_dining__warm-minimal__standard.json",
                            "unit01__bedroom__modern-luxury__premium.json")
     assert run_studio(a)["log"] != run_studio(b)["log"]
+
+
+# ---- each agent leads with what was distinctive about THIS plan ------------
+#
+# `test_the_log_differs_between_configurations` above is satisfied by a
+# template with the numbers substituted, and for a long time that is exactly
+# what it was passing: Zeina opened "You asked for X, styled Y, on the Z tier"
+# and Noura opened "The room is NxN cm with N doors on the plan" for all 260
+# exported configurations. Whole paragraphs differed while every reader saw the
+# same four sentences first.
+#
+# What follows asserts the fix rather than the symptom: the OPENING of each
+# turn has to be chosen from the plan, so that plans which differ in a way that
+# agent is responsible for open differently.
+
+_TIER = {t["id"]: t for t in BUDGET_TIERS}
+
+
+def _tier_ctx(name):
+    """The ctx the page builds for a tier, read from Python's list, not typed
+    out here — the same rule studio.js is held to."""
+    return _TIER[name]
+
+
+def _openings(run_studio, path, style=(), tier=None):
+    """Each agent's first sentence, as the reader meets it."""
+    import html
+    import re
+
+    log = run_studio(path, style=style, tier=tier)["log"]
+    out = {}
+    for who, says in re.findall(
+            r'<div class="agent-turn (\w+)">.*?<div class="agent-says">(.*?)</div>',
+            log, re.S):
+        text = html.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", says))).strip()
+        out[who] = re.split(r"(?<=[.!?]) ", text)[0]
+    assert set(out) == {"zeina", "noura", "adam", "auditor"}, out.keys()
+    return out
+
+
+# unit, room, style, tier — varied on every axis the studio offers, and chosen
+# to include the two shapes that must not read alike (a 335x551 corridor and a
+# 610x335 hall), a starter tier that drops slots, and a whole flat.
+_SPREAD = [
+    ("plans", "unit01__living_dining__warm-minimal__starter.json",
+     ["warm", "minimal"], "starter"),
+    ("plans", "unit01__living_dining__modern-luxury__premium.json",
+     ["modern", "luxury"], "premium"),
+    ("plans", "unit01__bedroom__boho-scandi__standard.json",
+     ["boho", "scandi"], "standard"),
+    ("plans", "unit04__living_dining__industrial-mid_century__comfort.json",
+     ["industrial", "mid_century"], "comfort"),
+    ("plans", "unit04__master_bedroom_1__any__starter.json", [], "starter"),
+    ("plans", "unit05__master_bedroom__warm-minimal__premium.json",
+     ["warm", "minimal"], "premium"),
+    ("flats", "unit04__flat__warm-minimal__starter.json",
+     ["warm", "minimal"], "starter"),
+    ("flats", "unit01__flat__modern-luxury__premium.json",
+     ["modern", "luxury"], "premium"),
+]
+
+
+@pytest.fixture(scope="module")
+def spread(run_studio):
+    from pathlib import Path
+
+    paths = [Path("site/data") / d / n for d, n, _, _ in _SPREAD]
+    if not all(p.exists() for p in paths):
+        pytest.skip("no static build in site/ — run `make site`")
+    return {
+        n: _openings(run_studio, p, style, _tier_ctx(tier))
+        for p, (_, n, style, tier) in zip(paths, _SPREAD)
+    }
+
+
+@pytest.mark.parametrize("who", ["zeina", "noura", "adam", "auditor"])
+def test_each_agent_opens_on_something_this_configuration_did(spread, who):
+    """Eight configurations, eight different first sentences per agent.
+
+    The bar is not "the paragraphs differ somewhere" — it is that the sentence
+    a reader's eye lands on first was chosen from this plan's own data. Seven
+    of eight rather than eight allows for two configurations that genuinely
+    produced the same notable fact for one agent (two rooms that each lost one
+    listing at the same lift door have the same story to tell, and inventing a
+    difference would be the failure this whole file argues against). It does
+    not allow for a template.
+    """
+    firsts = [cfg[who] for cfg in spread.values()]
+    assert len(set(firsts)) >= len(firsts) - 1, (
+        f"{who} reuses an opening across configurations:\n"
+        + "\n".join(sorted(set(firsts))))
+
+
+def test_a_brief_that_could_not_be_met_is_the_first_thing_zeina_says(spread):
+    """Six of 200 exported room plans drop a slot. On those, "you did not get
+    what you asked for" outranks every other framing — including on the flat,
+    where nine of eighteen slots came back empty."""
+    for name in ("unit01__living_dining__warm-minimal__starter.json",
+                 "unit04__flat__warm-minimal__starter.json"):
+        assert "came back empty" in spread[name]["zeina"], spread[name]["zeina"]
+    # And a plan that dropped nothing must not borrow the line.
+    assert "came back empty" not in spread[
+        "unit01__living_dining__modern-luxury__premium.json"]["zeina"]
+
+
+def test_noura_does_not_describe_a_corridor_and_a_hall_the_same_way(spread):
+    """335x551 and 610x335 are both "the living/dining room" and are not
+    remotely the same problem to lay out. The old copy printed both as "The
+    room is NxN cm with 1 door on the plan"."""
+    corridor = spread["unit01__living_dining__modern-luxury__premium.json"]["noura"]
+    hall = spread["unit04__living_dining__industrial-mid_century__comfort.json"]["noura"]
+    assert corridor != hall
+    assert "551" in corridor and "610" in hall
+    # Not merely different numbers in one sentence: a different reading of the
+    # room, which is the thing a designer would actually have said.
+    assert "corridor" in corridor and "hall" in hall
+
+
+def test_the_auditor_opens_on_what_it_found_not_on_a_count(spread):
+    """A delivery refusal, an empty slot and a clean plan are three different
+    findings. The opening used to be "N things in this plan are worth seeing"
+    for all three."""
+    empty = spread["unit04__flat__warm-minimal__starter.json"]["auditor"]
+    clean = spread["unit01__living_dining__modern-luxury__premium.json"]["auditor"]
+    assert "empty" in empty
+    assert "empty" not in clean
+
+
+def test_adam_leads_on_the_slot_whose_decision_was_the_odd_one(spread):
+    """Sourcing in recipe order put the sofa first in every living room ever
+    planned. The lead is now the slot where the recorded reason was something
+    other than a routine style match."""
+    lead = spread["unit01__bedroom__boho-scandi__standard.json"]["adam"]
+    # `chose_because` on that slot records a per-slot budget target, which is a
+    # genuinely different kind of decision from "matched boho".
+    assert "budget target" in lead
+    # The premium living room has no such slot, so it falls back to the biggest
+    # single line — a different sentence, not the same one with other numbers.
+    other = spread["unit01__living_dining__modern-luxury__premium.json"]["adam"]
+    assert "budget target" not in other and "biggest single line" in other
+
+
+def test_the_opening_is_reproducible(run_studio):
+    """No randomness, no clock, no iteration order: the same plan must produce
+    the same words every time or the page cannot be reviewed."""
+    path, = _exported_plans("unit01__living_dining__warm-minimal__standard.json")
+    tier = _tier_ctx("standard")
+    once = run_studio(path, style=["warm", "minimal"], tier=tier)["log"]
+    twice = run_studio(path, style=["warm", "minimal"], tier=tier)["log"]
+    assert once == twice
+
+
+def test_every_exported_plan_renders_a_log_with_no_holes(run_studio):
+    """`undefined`, `NaN` and `[object Object]` are what a builder that reached
+    for a field the plan does not carry leaves on the page. Checked across a
+    slice of the build rather than one file, because the fields that go missing
+    are the ones only some configurations have.
+    """
+    import json
+    from pathlib import Path
+
+    plans = sorted(Path("site/data/plans").glob("*.json"))
+    flats = sorted(Path("site/data/flats").glob("*.json"))
+    if not plans or not flats:
+        pytest.skip("no static build in site/ — run `make site`")
+
+    # Every twelfth room plan plus every twelfth flat: a spread across units,
+    # rooms, styles and tiers without paying for 260 node starts.
+    for path in plans[::12] + flats[::12]:
+        _, _, style, tier = path.stem.split("__")
+        log = run_studio(path,
+                         style=[] if style == "any" else style.split("-"),
+                         tier=_tier_ctx(tier))["log"]
+        for hole in ("undefined", "NaN", "[object Object]"):
+            assert hole not in log, f"{path.name} rendered {hole}"
+        # And the invariant that makes all of it checkable still holds here.
+        raw = path.read_text(encoding="utf-8")
+        for code in __import__("re").findall(r"<code>(.*?)</code>", log):
+            for number in __import__("re").findall(r"\d+(?:\.\d+)?", code):
+                assert number in raw, f"{number!r} was not read off {path.name}"
+        assert json.loads(raw)  # the fixture really did read a plan
 
 
 def test_the_brief_agrees_with_the_render_about_an_unpublished_colour(run_studio):

@@ -619,6 +619,171 @@ class TestAnAdditionMustEarnItsPlace:
         assert any("walkway in front of SOFA" in r for r in verdict.reasons)
 
 
+class TestEveryNewRuleShipsWithSomewhereToPutTheFurniture:
+    """The lesson from `bedside_reach`, pinned so it cannot be repeated.
+
+    That rule shipped without a `_positions` branch and every bedroom
+    immediately reported "no nightstand could be placed anywhere in the room":
+    a constraint the search cannot satisfy does not improve a layout, it
+    silently deletes a piece of furniture. Each of the four rules added here is
+    therefore tested twice — once in `test_ergonomics.py` for what it rejects,
+    and once here for what the planner can still fill.
+    """
+
+    def box(self, i):
+        return (i.x, i.y, i.x + i.dims_cm["w"], i.y + i.dims_cm["d"])
+
+    def lateral(self, a, b, axis):
+        i = 0 if axis == "x" else 1
+        return max(0.0, min(a[i + 2], b[i + 2]) - max(a[i], b[i]))
+
+    def plans(self):
+        return {t["id"]: auto_plan("unit01", "living_dining", t["sar"],
+                                   ["warm", "minimal"])
+                for t in BUDGET_TIERS}
+
+    def test_the_console_the_planner_picks_faces_the_sofa_it_serves(self):
+        """Measured before the tv_console branch existed: the console landed at
+        x=0-40 against a sofa spanning x=120-293, in 15 of 18 living/dining
+        combinations."""
+        for tier, plan in self.plans().items():
+            placed = {i.slot_id: i for i in plan.placed}
+            if "media_console" not in placed or "primary_seating" not in placed:
+                continue
+            tv, sofa = placed["media_console"], placed["primary_seating"]
+            axis = "x" if tv.facing in ("N", "S") else "y"
+            assert self.lateral(self.box(tv), self.box(sofa), axis) > 0, tier
+
+    def test_the_rug_the_planner_picks_lies_under_the_seating_group(self):
+        """Measured before the rug branch existed: a 120x120cm rug in the
+        origin corner, touching the sofa along a line and sharing 0% of its
+        area with the seating group."""
+        from app.geometry import RUG_ANCHOR_MIN_FRACTION, _seating_group_box
+
+        for tier, plan in self.plans().items():
+            rugs = [i for i in plan.placed if i.role == "rug"]
+            group = [i for i in plan.placed
+                     if i.role in {"sofa", "armchair", "coffee_table"}]
+            if not rugs or not group:
+                continue
+            gb = _seating_group_box(
+                [Placement(i.asin, Dims(i.dims_cm["w"], i.dims_cm["d"],
+                                        i.dims_cm["h"]), i.x, i.y, role=i.role)
+                 for i in group])
+            rb = self.box(rugs[0])
+            shared = (self.lateral(rb, gb, "x") * self.lateral(rb, gb, "y"))
+            smaller = min((rb[2] - rb[0]) * (rb[3] - rb[1]),
+                          (gb[2] - gb[0]) * (gb[3] - gb[1]))
+            assert shared / smaller >= RUG_ANCHOR_MIN_FRACTION, (
+                f"{tier}: rug shares {100 * shared / smaller:.0f}% with the group")
+
+    def test_the_accent_lamp_lands_beside_the_seating_and_not_in_a_corner(self):
+        """The reading lamp premium unlocks is still spread away from it; the
+        rule only ever asked for one lamp to be useful."""
+        from app.geometry import LAMP_REACH_CM, _gap_between
+
+        for tier, plan in self.plans().items():
+            lamps = [i for i in plan.placed if i.role == "floor_lamp"]
+            seats = [i for i in plan.placed if i.role in {"sofa", "armchair"}]
+            if not lamps or not seats:
+                continue
+            nearest = min(_gap_between(self.box(l), self.box(s))
+                          for l in lamps for s in seats)
+            assert nearest <= LAMP_REACH_CM, f"{tier}: nearest lamp {nearest:.0f}cm"
+
+    def test_the_armchair_is_turned_toward_the_group_not_merely_parked_near_it(self):
+        """The position term alone was not enough: `_positions` pulled the chair
+        toward the sofa and then took whichever facing sorted first."""
+        premium = auto_plan("unit01", "living_dining", TIER_SAR["premium"],
+                            ["warm", "minimal"])
+        placed = {i.slot_id: i for i in premium.placed}
+        assert "lounge_chair" in placed, "the armchair was deleted, not placed"
+        assert premium.validation["status"] == "pass", premium.validation["reasons"]
+
+    def test_no_tier_of_any_room_lost_a_slot_to_the_new_rules(self):
+        """The count that matters. A rule that improves every layout it allows
+        and quietly drops the ones it does not has made the room worse."""
+        expected = {"floor_covering": 6, "dining_table": 3, "accent_lighting": 3}
+        seen: dict[str, int] = {}
+        for unit, room in PLANNABLE:
+            for style in ([], ["warm", "minimal"], ["modern", "luxury"],
+                          ["industrial", "mid_century"], ["boho", "scandi"]):
+                for tier in BUDGET_TIERS:
+                    for u in auto_plan(unit, room, tier["sar"], style).unfilled:
+                        seen[u.slot_id] = seen.get(u.slot_id, 0) + 1
+        assert seen == expected, f"unfilled slots moved: {seen}"
+
+
+class TestTheDiningTableGetsChairs:
+    """`RECIPES["living_dining"]` had a dining_table slot and no chair slot, so
+    `auto_plan` never placed a dining chair in any of the 200 generated plans.
+    `pull_out` and the `DINING_CHAIR_ROLES` handling in `check_fit` and
+    `validate_layout` were tested and, from the planner's side, dead.
+    """
+
+    def test_the_recipe_offers_somewhere_to_sit_at_the_dining_table(self):
+        roles = {s["role"] for s in RECIPES["living_dining"]}
+        assert "dining_table" in roles
+        assert roles & {"dining_chair", "dining_chairs_pair"}, (
+            "a dining table with no chairs is a surface")
+
+    def test_the_chair_slot_is_gated_like_every_other_addition(self):
+        slot = next(s for s in RECIPES["living_dining"]
+                    if s["role"] == "dining_chairs_pair")
+        assert slot.get("unlock_sar") in {t["sar"] for t in BUDGET_TIERS}
+        assert not slot["required"]
+        table = next(s for s in RECIPES["living_dining"]
+                     if s["role"] == "dining_table")
+        assert slot["priority"] > table["priority"], (
+            "the chair is positioned relative to the table, so the table goes first")
+
+    def test_the_planner_actually_seats_the_table(self):
+        plan = auto_plan("unit01", "living_dining", TIER_SAR["premium"],
+                         ["warm", "minimal"])
+        placed = {i.slot_id: i for i in plan.placed}
+        chairs = [i for i in plan.placed if i.role == "dining_chairs_pair"]
+        assert "dining_table" in placed, "no table to seat"
+        assert chairs, "the dining table is still unseated"
+        assert plan.validation["status"] == "pass", plan.validation["reasons"]
+
+    def test_the_chair_is_tucked_at_the_table_rather_than_parked_elsewhere(self):
+        from app.geometry import _gap_between
+
+        plan = auto_plan("unit01", "living_dining", TIER_SAR["premium"],
+                         ["warm", "minimal"])
+        table = next(i for i in plan.placed if i.role == "dining_table")
+        chair = next(i for i in plan.placed if i.role == "dining_chairs_pair")
+        box = lambda i: (i.x, i.y, i.x + i.dims_cm["w"], i.y + i.dims_cm["d"])
+        assert _gap_between(box(chair), box(table)) <= 10, (
+            "a dining chair belongs pushed up to its table")
+
+    def test_the_pull_out_rule_now_fires_on_a_real_planned_layout(self):
+        """`pull_out` was reachable only from a hand-written test. Take the
+        chair the planner placed, back it into the wall behind it, and the rule
+        has to object — which proves it is live on planner output and not just
+        on fixtures."""
+        from app.geometry import Dims, Placement, validate_layout
+
+        plan = auto_plan("unit01", "living_dining", TIER_SAR["premium"],
+                         ["warm", "minimal"])
+        room = load_home().unit("unit01").room("living_dining").to_room()
+        objects = [
+            Placement(i.asin, Dims(i.dims_cm["w"], i.dims_cm["d"], i.dims_cm["h"]),
+                      x=i.x, y=i.y, facing=i.facing, role=i.role)
+            for i in plan.placed
+        ]
+        chair = next(o for o in objects if o.resolved_role() == "dining_chairs_pair")
+        # Shove it back against whichever wall it has its back to.
+        w, d = chair.dims.w, chair.dims.d
+        chair.x, chair.y = {
+            "N": (chair.x, room.depth_cm - d), "S": (chair.x, 0.0),
+            "W": (room.width_cm - w, chair.y), "E": (0.0, chair.y),
+        }[chair.facing]
+        verdict = validate_layout(room, objects)
+        assert verdict.status == "fail"
+        assert any("push back" in r.lower() for r in verdict.reasons), verdict.reasons
+
+
 class TestThePanelCanWriteAProductBrief:
     """The studio renders a per-product brief straight out of the plan JSON, so
     everything the brief shows has to be in `PlacedItem` rather than fetched

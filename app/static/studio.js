@@ -38,31 +38,40 @@ const CATEGORY_FOR_ROLE = {
 
 // ---------------------------------------------------------------- rendering the plan
 
+/** A flat is several validated rooms; a room is one. Flatten for the panel so
+ *  everything downstream — the agent log included — keeps working on a single
+ *  list of placed items, with the original kept on `_flat` for the parts that
+ *  have to speak about the rooms separately.
+ *
+ *  Named and exported rather than inlined into `render` so the tests can put a
+ *  whole-flat plan through the same transform the page does, instead of
+ *  reimplementing it beside it and drifting. */
+function flatten(plan) {
+  if (!plan.rooms) return plan;
+  return {
+    ...plan,
+    room: 'whole flat',
+    room_cm: plan.rooms[0].room_cm,
+    placed: plan.rooms.flatMap((r) =>
+      r.placed.map((i) => ({ ...i, slot_id: `${r.room}: ${i.slot_id}` }))),
+    unfilled: plan.rooms.flatMap((r) =>
+      r.unfilled.map((u) => ({ ...u, slot_id: `${r.room}: ${u.slot_id}` }))),
+    validation: {
+      status: plan.rooms.every((r) => r.validation.status === 'pass') ? 'pass'
+            : plan.rooms.some((r) => r.validation.status === 'fail') ? 'fail' : 'unverified',
+      reasons: plan.rooms.flatMap((r) =>
+        r.validation.reasons.map((text) =>
+          `${r.room.replace(/_/g, ' ')} — ${humaniseWithin(text, r.placed)}`)),
+      notes: plan.rooms.flatMap((r) =>
+        (r.validation.notes || []).map((text) =>
+          `${r.room.replace(/_/g, ' ')} — ${humaniseWithin(text, r.placed)}`)),
+    },
+    _flat: plan,
+  };
+}
+
 function render(plan) {
-  // A flat is several validated rooms; a room is one. Flatten for the panel so
-  // everything downstream keeps working on a single list of placed items.
-  if (plan.rooms) {
-    plan = {
-      ...plan,
-      room: 'whole flat',
-      room_cm: plan.rooms[0].room_cm,
-      placed: plan.rooms.flatMap((r) =>
-        r.placed.map((i) => ({ ...i, slot_id: `${r.room}: ${i.slot_id}` }))),
-      unfilled: plan.rooms.flatMap((r) =>
-        r.unfilled.map((u) => ({ ...u, slot_id: `${r.room}: ${u.slot_id}` }))),
-      validation: {
-        status: plan.rooms.every((r) => r.validation.status === 'pass') ? 'pass'
-              : plan.rooms.some((r) => r.validation.status === 'fail') ? 'fail' : 'unverified',
-        reasons: plan.rooms.flatMap((r) =>
-          r.validation.reasons.map((text) =>
-            `${r.room.replace(/_/g, ' ')} — ${humaniseWithin(text, r.placed)}`)),
-        notes: plan.rooms.flatMap((r) =>
-          (r.validation.notes || []).map((text) =>
-            `${r.room.replace(/_/g, ' ')} — ${humaniseWithin(text, r.placed)}`)),
-      },
-      _flat: plan,
-    };
-  }
+  plan = flatten(plan);
   state.plan = plan;
   state.room = plan.room_cm;
   // Text first, always. The room follows whenever three.js has landed.
@@ -387,94 +396,358 @@ function unspentOf(plan) {
   };
 }
 
+/* ---------------------------------------------------------------- what was
+ * distinctive about THIS plan
+ *
+ * Two hundred configurations produce two hundred genuinely different plans:
+ * some drop slots, some are refused by the lift, some are corridors and some
+ * are halls, some spend a third of the budget and some spend all of it. Copy
+ * that opens the same way over all of them is a template with the numbers
+ * substituted, and it reads as one — which undercuts the claim that four
+ * agents looked at this specific room.
+ *
+ * So each turn below picks its own lead from the plan. The helpers here are
+ * the shared part of that: they find WHICH fact is the notable one. They never
+ * invent the fact, and nothing here computes a measurement — every number that
+ * reaches the reader is one the JSON already states, which is what lets
+ * test_studio.py re-find all of them in the file they were printed from.
+ */
+
+/** Slots the recipe defines that this budget never put into play.
+ *
+ *  A flat records them per room, so they are gathered the way the panel
+ *  gathers everything else: one list, room-qualified. */
+function lockedSlots(plan) {
+  const rooms = plan._flat?.rooms;
+  if (rooms) {
+    return rooms.flatMap((r) => (r.unspent_budget?.slots_locked_by_tier || [])
+      .map((s) => ({ ...s, slot_id: `${r.room}: ${s.slot_id}` })));
+  }
+  return plan.unspent_budget?.slots_locked_by_tier || [];
+}
+
+/** The cheapest amount that would unlock any of them — a figure the plan
+ *  states per slot, not one derived from the tier list. */
+const nextUnlock = (locked) =>
+  locked.reduce((lo, s) => Math.min(lo, s.unlocks_at_sar), Infinity);
+
+const listWords = (xs) => xs.length > 1
+  ? `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`
+  : (xs[0] ?? '');
+
+/** The same list, but a whole-flat plan can hold eighteen slots and naming all
+ *  of them mid-sentence buries the sentence. The full set is never hidden — it
+ *  is the panel below, and for the auditor one gotcha per line underneath. */
+const listSome = (xs, cap = 4) => (xs.length > cap
+  ? `${xs.slice(0, cap).join(', ')} and ${xs.length - cap} more`
+  : listWords(xs));
+
+/** Which of the two numbers in `room_cm` is the larger, and by enough to
+ *  matter. Nothing is measured: this only decides which sentence gets written
+ *  about a room the survey already dimensioned. */
+function shapeOf(r) {
+  const deep = r.depth > r.width;
+  const long = deep ? r.depth : r.width;
+  const short = deep ? r.width : r.depth;
+  const ratio = long / short;
+  return {
+    deep, long, short,
+    kind: ratio >= 1.5 ? 'elongated' : ratio >= 1.2 ? 'oblong' : 'squarish',
+  };
+}
+
+/** The slot the planner had to work hardest for, and the one it got first
+ *  time. `positions_tried` is recorded per slot and swings from 1 to over two
+ *  hundred across these plans, so it is the honest answer to "was this room
+ *  tight" — and it is an answer that differs per configuration. */
+function effortOf(placed) {
+  const tried = (i) => i.decision?.positions_tried ?? 0;
+  const hardest = placed.reduce((a, b) => (tried(b) > tried(a) ? b : a), placed[0]);
+  return {
+    hardest, worst: hardest ? tried(hardest) : 0,
+    firstTry: placed.filter((i) => tried(i) === 1).length,
+    total: placed.reduce((n, i) => n + tried(i), 0),
+  };
+}
+
 /* Zeina frames the brief and routes it. She never picks a product: eazli's own
  * page says she "doesn't give you a catalog or a quote; she gives you a map".
- * So this turn is only what was asked for and where it was sent. */
+ * So this turn is only what was asked for and where it was sent — but WHICH of
+ * those facts leads depends on the brief. A brief that came back short is the
+ * thing to say first; a flat sharing one budget across four rooms is a
+ * different opening again from a room whose tier locked half the recipe. */
 function zeinaTurn(plan, ctx) {
   const flat = plan._flat;
-  const asked = flat
-    ? `${esc(flat.label)} — every room in it`
+  const dropped = plan.unfilled.length;
+  const slots = plan.placed.length + dropped;
+  const locked = lockedSlots(plan);
+  const tier = ctx.tier ? esc(ctx.tier.label) : null;
+  const budget = `${money(plan.budget_sar)} SAR`;
+  const where = flat
+    ? esc(flat.label)
     : `the ${slotWords(plan.room)} in ${esc(plan.unit)}`;
-  const budget = ctx.tier
-    ? `the ${esc(ctx.tier.label)} tier at ${money(plan.budget_sar)} SAR`
-      + (ctx.tier.note ? ` (${esc(ctx.tier.note)})` : '')
-    : `${money(plan.budget_sar)} SAR`;
-  const style = (ctx.style || []).length
-    ? `styled ${esc(ctx.style.join(' + '))}`
-    : 'with no style preference stated';
-  const slots = plan.placed.length + plan.unfilled.length;
-  return agentTurn('zeina', `You asked for ${asked}, ${style}, on ${budget}.
-    I don't hand you a catalogue or a quote; I hand you a map. So I routed it:
-    the ${slots} slot${slots === 1 ? '' : 's'} ${flat ? 'those rooms’ recipes define'
-      : 'this room’s recipe defines'} went to
-    Noura to lay out, the budget went to Adam to source against, and whatever the
-    two of them agreed on went to fit-auditor, who is allowed to throw it out.`);
+  const styled = (ctx.style || []).length ? esc(ctx.style.join(' + ')) : null;
+  const u = unspentOf(plan);
+
+  // Worst news first. Below that, whichever fact about this configuration is
+  // the one the next configuration would not have produced.
+  let opener;
+  if (dropped) {
+    const names = listSome(plan.unfilled.map((s) => slotWords(s.slot_id)));
+    opener = `${dropped} of the ${slots} slots in ${where} came back empty — ${names} —
+      so I could not meet this brief in full, and that is the first thing I owe you.
+      ${measure(plan.unfilled[0].reason)} That is the ceiling you set talking,
+      not the room: it is a real ${budget}, and it stopped here.`;
+  } else if (flat) {
+    const shares = flat.rooms.map((r) =>
+      `${slotWords(r.room)} ${money(r.area_share_sar ?? r.budget_sar)} SAR`);
+    opener = `${esc(flat.label)} is not a room, it is ${flat.rooms.length} of them and
+      ${slots} slots sharing one ${budget}. I split the money by floor area before
+      anything was drawn — ${listWords(shares)} — so the big room cannot quietly eat
+      the small ones, and each was then laid out and sourced against its own share.`;
+  } else if (locked.length) {
+    const at = nextUnlock(locked);
+    const names = listSome([...new Set(locked.map((s) => slotWords(s.slot_id)))]);
+    opener = `${tier ? `The ${tier} tier` : `A ${budget} brief`} is what shaped this one:
+      it puts ${slots} slot${slots === 1 ? '' : 's'} into play for
+      ${where} and holds ${locked.length} back — ${names} — which this room does not
+      get to consider below ${money(at)} SAR. What you are looking at is the
+      essentials, deliberately, not everything the recipe could hold.`;
+  } else {
+    opener = `Nothing was held back on this one: every slot the recipe defines for
+      ${where} went into play, all ${slots} of them${u && u.unspent_sar > 0
+        ? `, and ${money(u.unspent_sar)} SAR of the ${budget} still came back
+           unspent — the room ran out of things worth buying before the money ran
+           out` : `, and it took ${money(plan.total_sar)} SAR of the ${budget} to do it`}.`;
+  }
+
+  // The routing is her job whatever the brief was, but what she had to route
+  // is not the same thing every time: a stated style is a filter she can hand
+  // Noura, and no style stated means there was nothing to hand over.
+  const routing = styled
+    ? `I don't hand you a catalogue or a quote; I hand you a map. So: the
+       ${styled} brief and its ${slots} slot${slots === 1 ? '' : 's'} went to Noura
+       to lay out, the ${budget} went to Adam to source against, and what the two
+       of them agreed on went to fit-auditor, who is allowed to throw it out.`
+    : `I don't hand you a catalogue or a quote; I hand you a map. You stated no
+       style, so there was no filter to pass Noura beyond the
+       ${slots} slot${slots === 1 ? '' : 's'} themselves and Adam had to rank on
+       evidence rather than taste. The ${budget} was his ceiling, and what the two
+       of them agreed on went to fit-auditor, who is allowed to throw it out.`;
+
+  return agentTurn('zeina', `${opener} ${routing}`);
+}
+
+/** The door as the survey recorded it — width, wall and offset all stated. */
+function doorLine(r) {
+  const doors = r.doors || [];
+  if (!doors.length) return 'The plan locates no door in it.';
+  const d = doors[0];
+  return `The door is <code>${d.width_cm}&nbsp;cm</code> on the ${esc(d.wall)} wall,
+    <code>${d.offset_cm}&nbsp;cm</code> from the corner`
+    + (doors.length > 1 ? `, and there are ${doors.length} in all.` : '.');
+}
+
+/** The lead sentence about a room, which is the room's own proportions.
+ *
+ *  A 335x551 corridor and a 610x335 hall are not the same problem and must not
+ *  get the same sentence. Which one this is comes from `room_cm`; the piece
+ *  named against it is the largest footprint the plan actually placed, printed
+ *  at the size the listing states rather than measured against an axis it may
+ *  have been rotated onto. */
+function shapeSentence(r, placed) {
+  const s = shapeOf(r);
+  const dims = `<code>${r.width}&times;${r.depth}&nbsp;cm</code>`;
+  const n = placed.length;
+  const load = `${n} piece${n === 1 ? '' : 's'} to seat in it`;
+  const biggest = placed.length
+    ? placed.reduce((a, b) =>
+        (b.dims_cm.w * b.dims_cm.d > a.dims_cm.w * a.dims_cm.d ? b : a))
+    : null;
+  const against = biggest
+    ? ` <code>${s.short}&nbsp;cm</code> is the tighter of the two, and the largest
+        footprint I had to seat inside it is the ${slotWords(biggest.slot_id)} at
+        <code>${biggest.dims_cm.w}&times;${biggest.dims_cm.d}&nbsp;cm</code>.`
+    : '';
+
+  if (s.kind === 'elongated') {
+    return s.deep
+      ? `${dims}: this one runs <code>${r.depth}&nbsp;cm</code> back from the door wall
+         on a frontage of only <code>${r.width}&nbsp;cm</code>, which is a corridor to lay
+         out rather than a room, and I had ${load}.${against}`
+      : `${dims}: <code>${r.width}&nbsp;cm</code> across and only
+         <code>${r.depth}&nbsp;cm</code> front to back, so this is a hall — width to spare,
+         depth to fight over, and ${load}.${against}`;
+  }
+  if (s.kind === 'oblong') {
+    return s.deep
+      ? `${dims}, noticeably deeper than it is wide, with ${load} — a long rectangle,
+         though not the corridor the living rooms in this building can be.${against}`
+      : `${dims}, a wide and shallow rectangle with ${load}: frontage to spread along
+         and less room to come forward into.${against}`;
+  }
+  return `${dims} with ${load} — near enough square that nothing is forced onto one
+    axis, so the proportions are not what constrains this one.${against}`;
 }
 
 /* Noura owns the layout: the slots, the positions, and the engine's verdict on
  * the arrangement as a whole — including the advisories in validation.notes,
- * which are hers because they are about the room rather than a product. */
+ * which are hers because they are about the room rather than a product.
+ *
+ * She leads on the room, and the rooms are not alike: a corridor, a hall and a
+ * square each get their own sentence, and what happened next is read off
+ * `positions_tried`, which is 1 where a piece dropped straight in and over two
+ * hundred where the room fought back. */
 function nouraTurn(plan) {
   const flat = plan._flat;
-  const r = plan.room_cm;
-  const doors = (r.doors || []).length;
-  const shape = flat
-    ? `${flat.rooms.length} rooms, each measured off the surveyed floor plan and laid
-       out on its own.`
-    : `The room is <code>${r.width}&times;${r.depth}&nbsp;cm</code> with
-       ${doors} door${doors === 1 ? '' : 's'} on the plan.`;
   const filled = plan.placed.length + plan.unfilled.length;
-  const tried = plan.placed.reduce((n, i) => n + (i.decision?.positions_tried ?? 0), 0);
-  const first = plan.placed[0];
-  const opener = first
-    // The position is printed as the plan states it, not rounded: a rounded
-    // number is a number the reader cannot find in the data behind the page.
-    ? `First placement: ${slotWords(first.slot_id)} at
-       <code>(${first.x}, ${first.y})&nbsp;cm</code> facing
-       ${esc(first.facing)} — ${esc(first.decision?.placed_because ?? '')}.
-       ${tried} position${tried === 1 ? '' : 's'} were tested in all.`
-    : 'Nothing could be placed here, so there is no layout to describe.';
-  const verdict = plan.validation.status === 'pass'
-    ? `The engine re-checked the finished arrangement and returned
-       <b class="v-pass">pass</b> with nothing listed against it.`
-    : `The engine returned <b class="v-${plan.validation.status}">${plan.validation.status}</b>
-       on the finished arrangement; what it said is fit-auditor's to read out.`;
   const notes = [...new Set(plan.validation.notes || [])];
-  const advisory = notes.length
-    ? ` It did leave ${notes.length} advisor${notes.length === 1 ? 'y' : 'ies'}:
-        ${notes.map((n) => measure(plan._flat ? n : humaniseWithin(n, plan.placed))).join(' ')}`
+  const e = effortOf(plan.placed);
+
+  const shape = flat
+    ? `${plan.placed.length} pieces across ${flat.rooms.length} rooms, and no two of
+       those rooms the same problem:
+       ${listWords(flat.rooms.map((rm) =>
+         `${slotWords(rm.room)} at <code>${rm.room_cm.width}&times;${rm.room_cm.depth}&nbsp;cm</code>`))}.
+       Each was dimensioned off the surveyed floor plan and laid out on its own —
+       nothing was copied from one room into the next.`
+    : `${shapeSentence(plan.room_cm, plan.placed)} ${doorLine(plan.room_cm)}`;
+
+  // An advisory is about the room, so it outranks the room's proportions: the
+  // reader needs the caveat before the description it qualifies.
+  const advisoryLead = notes.length
+    ? `Before anything else about this layout: the engine left
+       ${notes.length} advisor${notes.length === 1 ? 'y' : 'ies'} on it —
+       ${notes.map((n) => measure(flat ? n : humaniseWithin(n, plan.placed))).join(' ')} `
     : '';
-  return agentTurn('noura', `${shape} I filled
-    ${plan.placed.length} of the ${filled} slot${filled === 1 ? '' : 's'} the recipe defines.
-    ${opener} ${verdict}${advisory}`);
+
+  let effort;
+  if (!plan.placed.length) {
+    effort = 'Nothing could be placed here, so there is no layout to describe.';
+  } else if (e.worst <= 1) {
+    effort = `It was not a fight: all ${plan.placed.length} pieces held in the very
+      first position I tested.`;
+  } else {
+    const h = e.hardest;
+    // Printed as the plan states it, not rounded: a rounded number is one the
+    // reader cannot find in the data behind the page.
+    const at = `<code>(${h.x}, ${h.y})&nbsp;cm</code> facing ${esc(h.facing)}`;
+    const because = h.decision?.placed_because
+      ? ` — ${esc(h.decision.placed_because)}` : '';
+    const easy = e.firstTry
+      ? `${e.firstTry} of the ${plan.placed.length} pieces dropped straight into the
+         first position tried`
+      : `not one of the ${plan.placed.length} pieces dropped straight in`;
+    effort = e.worst >= 50
+      ? `The ${slotWords(h.slot_id)} is where the room fought back: ${e.worst} positions
+         tested before one held, at ${at}${because}. ${easy}, and ${e.total} positions
+         were tried across the room in all.`
+      : `It went in fairly straightforwardly. The most awkward piece was the
+         ${slotWords(h.slot_id)} at ${e.worst} positions tested, settling at ${at}${because},
+         and ${easy}.`;
+  }
+
+  const verdict = plan.validation.status === 'pass'
+    ? `I filled ${plan.placed.length} of the ${filled} slot${filled === 1 ? '' : 's'} the
+       recipe defines, and the engine re-checked the finished arrangement and returned
+       <b class="v-pass">pass</b> with nothing listed against it.`
+    : `I filled ${plan.placed.length} of the ${filled} slot${filled === 1 ? '' : 's'} the
+       recipe defines. The engine returned
+       <b class="v-${plan.validation.status}">${plan.validation.status}</b> on the finished
+       arrangement; what it said is fit-auditor's to read out.`;
+
+  return agentTurn('noura', `${advisoryLead}${shape} ${effort} ${verdict}`);
 }
 
-/* Adam owns sourcing, and sourcing is per slot: what the pool was, what beat
- * what, and what the running total had reached by the time he got there. */
+/** The planner records WHY it took each piece, and the four things it can say
+ *  are genuinely different kinds of decision — a style match is routine, a
+ *  budget target it deliberately undershot is not. Classifying on the recorded
+ *  phrase, never on a guess about the product. */
+function reasonKind(why) {
+  if (/^budget target/.test(why)) return 'target';
+  if (/^cheapest that fits/.test(why)) return 'cheapest';
+  if (/^best evidence/.test(why)) return 'evidence';
+  if (/^matched /.test(why)) return 'style';
+  return 'other';
+}
+
+const REASON_RANK = { target: 4, cheapest: 3, evidence: 2, style: 1, other: 0 };
+const KIND_WORDS = {
+  target: 'came in under a per-slot budget target',
+  cheapest: 'had no style tag and no rating to go on, so price decided',
+  evidence: 'was ranked on review evidence',
+  style: 'matched the style words',
+  other: 'was recorded without a reason',
+};
+
+/* Adam owns sourcing. Listing every slot in recipe order gave every plan the
+ * same paragraph with the nouns changed, so he leads with the slot where the
+ * decision was actually interesting — a target he undershot, a pool with
+ * nothing to rank on, a fallback to evidence, or failing all of that the
+ * biggest single line — and compresses the rest into a tally. */
 function adamTurn(plan) {
   if (!plan.placed.length) {
     return agentTurn('adam', `I sourced nothing: no slot in this plan got as far as
       a product I could price.`);
   }
-  let running = 0;
-  const lines = plan.placed.map((i) => {
+  const scored = plan.placed.map((i) => {
     const d = i.decision || {};
-    running += i.price_sar || 0;
-    const over = (d.ranked_above || [])[0];
-    const others = (d.ranked_above || []).length - 1;
-    return `<b>${slotWords(i.slot_id)}</b> — ${d.considered} in the pool, took
-      ${esc(String(i.title).slice(0, 44))} at ${money(i.price_sar)} SAR because
-      ${esc(d.chose_because ?? 'no reason was recorded')}${over
-        ? `, over ${esc(String(over.title).slice(0, 34))} at ${money(over.price_sar || 0)} SAR`
-        + (others > 0 ? ` and ${others} other${others === 1 ? '' : 's'}` : '')
-        : ''}. Running total ${money(running)} SAR.`;
+    const why = d.chose_because ?? '';
+    return { i, d, why, kind: reasonKind(why) };
   });
+  // Deterministic: rarest kind of decision first, then the biggest spend, then
+  // the slot name. The same plan always leads on the same slot.
+  const order = scored.slice().sort((a, b) =>
+    (REASON_RANK[b.kind] - REASON_RANK[a.kind])
+    || ((b.i.price_sar || 0) - (a.i.price_sar || 0))
+    || (a.i.slot_id < b.i.slot_id ? -1 : 1));
+  const top = order[0];
+  const { i, d, why, kind } = top;
+  const runner = (d.ranked_above || [])[0];
+  const pool = `${d.considered} in the pool`;
+  const took = `${esc(String(i.title).slice(0, 60))} at ${money(i.price_sar)} SAR`;
+
+  let lead;
+  if (kind === 'target') {
+    lead = `The ${slotWords(i.slot_id)} is where the budget showed its hand:
+      ${measure(why)}. So ${took}, out of ${pool} — the money was there and nothing
+      dearer earned it.`;
+  } else if (kind === 'cheapest') {
+    lead = `The ${slotWords(i.slot_id)} is the one I had nothing to judge on —
+      ${esc(why)} — so ${took}, out of ${pool}. That is not a recommendation; it is
+      what is left when the listings publish neither a style word nor a rating.`;
+  } else if (kind === 'evidence') {
+    lead = `The ${slotWords(i.slot_id)} came down to evidence rather than taste —
+      ${esc(why)} — so ${took}, out of ${pool}, is the one to look at first.`;
+  } else {
+    lead = `The biggest single line here is the ${slotWords(i.slot_id)}: ${took},
+      ${esc(why || 'no reason was recorded')}, out of ${pool}`
+      + (runner
+        ? `, taken over ${esc(String(runner.title).slice(0, 40))} at
+           ${money(runner.price_sar || 0)} SAR`
+        : '') + '.';
+  }
+  if (kind !== 'style' && runner) {
+    lead += ` It was ranked above ${esc(String(runner.title).slice(0, 40))} at
+      ${money(runner.price_sar || 0)} SAR.`;
+  }
+
+  const rest = order.slice(1);
+  const tally = Object.entries(rest.reduce((t, s) => {
+    t[s.kind] = (t[s.kind] || 0) + 1; return t;
+  }, {})).sort((a, b) => b[1] - a[1]);
+  const restLine = rest.length
+    ? `The other ${rest.length}, compressed: ${listSome(rest.map((s) =>
+        `${slotWords(s.i.slot_id)} ${money(s.i.price_sar)} SAR`), 6)}. Of those,
+       ${listWords(tally.map(([k, n]) => `${n} ${KIND_WORDS[k]}`))}.`
+    : 'There was no second slot to source.';
+
   const u = unspentOf(plan);
   const tail = `That is ${money(plan.total_sar)} SAR against
     ${money(plan.budget_sar)} SAR${u && u.unspent_sar > 0
       ? `, leaving ${money(u.unspent_sar)} SAR I could not spend on anything that
          verified` : ''}.`;
-  return agentTurn('adam', `${lines.join('<br>')}<br>${tail}`);
+  return agentTurn('adam', `${lead}<br>${restLine}<br>${tail}`);
 }
 
 // Every cause the planner counts is already a phrase. Underscores out, and
@@ -485,48 +758,126 @@ const causeWords = (cause) => esc(cause.replace(/_/g, ' '));
  * Every line it prints is a rejection, an empty slot or a failed rule that the
  * plan already recorded — including the stage each rejection died at. When the
  * plan holds none of that, it says so rather than manufacturing a worry. */
+/** Every delivery refusal the engine writes names its own leg first:
+ *  `lift car doors (door 85x210cm): item 150x213x99cm cannot pass...`. Reading
+ *  that name off the front of the recorded sentence adds no claim to it — it is
+ *  the same string, cut at the bracket the engine put there. */
+const legName = (why) => String(why).split(' (')[0].trim();
+
 function auditorTurn(plan) {
   const gotchas = [];
   const seen = new Set();
+  const stages = {};             // which stage killed things, and how many
+  const blockingLegs = {};       // and, at the delivery stage, which leg
+  const deliverySlots = new Set();  // and which slots paid for it
   for (const i of plan.placed) {
     for (const r of i.decision?.rejected || []) {
       const key = `${r.asin}|${r.why}`;
       if (seen.has(key)) continue;   // the same listing loses in several rooms
       seen.add(key);
+      stages[r.stage] = (stages[r.stage] || 0) + 1;
+      if (r.stage === 'delivery') {
+        const leg = legName(r.why);
+        blockingLegs[leg] = (blockingLegs[leg] || 0) + 1;
+        deliverySlots.add(i.slot_id);
+      }
       gotchas.push(`<b>${slotWords(i.slot_id)}</b> · ${esc(String(r.title).slice(0, 44))}
         rejected at the <i>${esc(r.stage)}</i> stage —
         ${measure(humaniseWithin(r.why, plan.placed))}`);
     }
   }
+  const empties = [];
   for (const s of plan.unfilled) {
+    empties.push(s);
     gotchas.push(`<b>${slotWords(s.slot_id)}</b> · left empty — ${measure(s.reason)}`
       + ((s.rejected || []).length
         ? ` ${s.rejected.length} candidate(s) were ruled out before it gave up.` : ''));
   }
-  for (const reason of plan.validation.reasons || []) {
+  const failures = plan.validation.reasons || [];
+  for (const reason of failures) {
     gotchas.push(`<b>engine verdict</b> · ${measure(
       plan._flat ? reason : humaniseWithin(reason, plan.placed))}`);
   }
 
   const u = unspentOf(plan);
-  const tally = Object.entries(u?.candidates_rejected || {}).filter(([, n]) => n > 0);
+  const tally = Object.entries(u?.candidates_rejected || {})
+    .filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
   const scope = tally.length
     ? ` Behind the plan: of ${u.candidates_in_scope} listing(s) in scope for these
         categories${u.rooms ? `, counted once per room across ${u.rooms} rooms` : ''},
         ${tally.map(([cause, n]) => `${n} ${causeWords(cause)}`).join(', ')}.`
     : '';
-  const opening = gotchas.length
-    ? `${gotchas.length} thing${gotchas.length === 1 ? ' in this plan is' : 's in this plan are'}
-       worth seeing before you buy. Each is the engine's own measurement, quoted.`
-    : `Nothing to object to: no candidate was rejected on a measurement, no slot was
-       left empty, and the engine returned ${esc(plan.validation.status)} with no
-       reason against it.`;
+
+  // Three plans can each have "things worth seeing" and be three completely
+  // different stories: an arrangement the engine threw out, a slot nobody could
+  // fill, and a piece that fits the room perfectly but cannot get up the lift.
+  // Worst first, and the opening says which of them this is — including which
+  // leg of the delivery route did the refusing, because "the lift car doors"
+  // and "the turn into the flat" are two different things to go and measure.
+  const rejects = gotchas.length - empties.length - failures.length;
+  const delivery = stages.delivery || 0;
+  const elsewhere = rejects - delivery;
+  const also = (n, what) => (n ? ` Below that, ${n} ${what}.` : '');
+  let opening;
+  if (failures.length) {
+    opening = `Start with the verdict: the engine returned
+      <b class="v-${plan.validation.status}">${esc(plan.validation.status)}</b> on this
+      arrangement and listed ${failures.length}
+      reason${failures.length === 1 ? '' : 's'} against it. Nothing below matters until
+      that does.`
+      + also(empties.length, 'slot(s) came back empty')
+      + also(rejects, 'listing(s) were ruled out on a measurement');
+  } else if (empties.length) {
+    opening = `${empties.length} slot${empties.length === 1 ? '' : 's'} in this plan
+      ${empties.length === 1 ? 'is' : 'are'} empty — ${listSome(empties.map((s) =>
+        slotWords(s.slot_id)))} — so the arrangement holds but the room is unfinished,
+      which is a different thing from a room that failed.`
+      + also(rejects, 'listing(s) were ruled out with a measurement before that');
+  } else if (delivery) {
+    // Which legs, in the words the engine wrote them in, commonest first.
+    const legs = Object.entries(blockingLegs).sort((a, b) => b[1] - a[1]);
+    const named = listWords(legs.slice(0, 2).map(([leg, n]) =>
+      `${n} at the ${esc(leg)}`));
+    const where = listSome([...deliverySlots].map(slotWords), 3);
+    opening = (delivery === 1
+      ? `The ${where} is the only slot where this plan lost anything to the building
+         rather than to the room: one listing that fits the space was turned back at
+         the ${esc(legs[0][0])}.`
+      : `${delivery} listings that would have fitted this room were refused on the way
+         to it — ${named}${legs.length > 2
+           ? `, plus the rest across ${legs.length - 2} other leg(s) of the route` : ''} —
+         and they cost the ${where}.`)
+      + ` Nothing in the plan breaks a rule inside the room; it is the route that
+        removed them, at the <i>delivery</i> stage, and a route you can go and measure.`
+      + also(elsewhere, 'other(s) went at an earlier stage');
+  } else if (rejects) {
+    opening = `${rejects} listing${rejects === 1 ? '' : 's'} in this plan
+      ${rejects === 1 ? 'was' : 'were'} ruled out on a measurement before the winner
+      stood. Nothing was left empty and the engine found nothing to say against the
+      arrangement, so this is the shortlist you did not see.`;
+  } else {
+    // Even a clean plan is not the same clean plan twice: what the catalogue
+    // threw away before this room was ever consulted differs per category set,
+    // so that is what leads instead of a stock all-clear.
+    const worst = tally[0];
+    const lead = worst
+      ? `${worst[1]} of the ${u.candidates_in_scope} listings in scope for these
+         categories never reached this room at all — ${causeWords(worst[0])} — and that
+         was settled in the catalogue, before any of it was my problem. `
+      : '';
+    return agentTurn('auditor', `${lead}Nothing to object to in the plan itself: no
+      candidate was rejected on a measurement, no slot was left empty, and the engine
+      returned ${esc(plan.validation.status)} with no reason against it.${scope}`,
+      gotchas);
+  }
   return agentTurn('auditor', opening + scope, gotchas);
 }
 
 function agentLogHtml(plan, ctx) {
-  return `<p class="muted small">Four agents produced this room. Each speaks only for
-    the decisions the plan records as its own.</p>`
+  const what = plan._flat ? `these ${plan._flat.rooms.length} rooms` : 'this room';
+  return `<p class="muted small">Four agents produced ${what}. Each speaks only for
+    the decisions the plan records as its own, and each leads with whatever this
+    plan did that the last one did not.</p>`
     + zeinaTurn(plan, ctx) + nouraTurn(plan) + adamTurn(plan) + auditorTurn(plan);
 }
 
@@ -1023,4 +1374,4 @@ function finishRow(s) {
  * plans in node and check that every measurement they print is in the JSON
  * they printed it from. Nothing in the page imports these.
  */
-export { agentLogHtml, briefHtml };
+export { agentLogHtml, briefHtml, flatten };

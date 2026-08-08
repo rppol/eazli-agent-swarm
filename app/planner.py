@@ -25,9 +25,18 @@ from app.catalog import Product, parse_capture
 from app import styling
 from app.geometry import (
     BEDSIDE_ROLES,
+    DINING_CHAIR_ROLES,
+    FOCAL_POINT_MAX_CM,
+    FOCAL_ROLES,
+    LAMP_REACH_ROLES,
+    TV_VIEWING_MIN_CM,
     Dims,
     Placement,
     Room,
+    _gap_between,
+    _lateral_axis,
+    _seating_group_box,
+    _span_overlap,
     check_access_path,
     validate_layout,
 )
@@ -58,7 +67,7 @@ BUDGET_TIERS: list[dict] = [
     {"id": "standard", "label": "Standard", "sar": 8000,
      "note": "the essentials, plus a bedside table"},
     {"id": "comfort", "label": "Comfort", "sar": 15000,
-     "note": "adds an armchair and shelving"},
+     "note": "adds an armchair, shelving and chairs for the dining table"},
     {"id": "premium", "label": "Premium", "sar": 30000,
      "note": "adds a second light and a side table"},
 ]
@@ -120,15 +129,25 @@ RECIPES: dict[str, list[dict]] = {
         {"slot_id": "shelving", "role": "bookshelf", "category": "bookshelf",
          "facings": ["S", "N", "E", "W"], "priority": 7, "required": False,
          "unlock_sar": _SAR["comfort"]},
+        # There was a dining_table slot and nothing to sit on at it, so
+        # `auto_plan` never placed a dining chair in any of the 200 generated
+        # plans — which made `pull_out` and the DINING_CHAIR_ROLES handling in
+        # check_fit and validate_layout tested but, from the planner's side,
+        # dead code. After the table, because the chair is positioned against
+        # it. The catalogue has 15 usable pairs from 119 SAR, so the gate is
+        # about when a room is finished enough to want them, not about cost.
+        {"slot_id": "dining_seating", "role": "dining_chairs_pair",
+         "category": "dining_chairs_pair", "facings": ["N", "S", "E", "W"],
+         "priority": 8, "required": False, "unlock_sar": _SAR["comfort"]},
         {"slot_id": "reading_light", "role": "floor_lamp", "category": "floor_lamp",
-         "facings": ["S"], "priority": 8, "required": False,
+         "facings": ["S"], "priority": 9, "required": False,
          "unlock_sar": _SAR["premium"]},
         {"slot_id": "side_table", "role": "side_table", "category": "nightstand",
-         "facings": ["N", "S", "E", "W"], "priority": 9, "required": False,
+         "facings": ["N", "S", "E", "W"], "priority": 10, "required": False,
          "unlock_sar": _SAR["premium"]},
         # Last, because it goes under whatever is already there.
         {"slot_id": "floor_covering", "role": "rug", "category": "rug",
-         "facings": ["N"], "priority": 10, "required": False},
+         "facings": ["N"], "priority": 11, "required": False},
     ],
     "bedroom": [
         {"slot_id": "bed", "role": "bed", "category": "bed",
@@ -416,6 +435,47 @@ def candidates_for(
     return sorted(pool, key=lambda p: _score(p, style or [], slot_target))
 
 
+def _looks_at(box: tuple, facing: str, targets, limit: float | None = FOCAL_POINT_MAX_CM) -> bool:
+    """Would something at `box` facing `facing` actually be looking at one of
+    `targets`? The same three conditions `_seat_has_a_focal_point` enforces —
+    on the side the front points, sharing the lateral band, close enough to be
+    the thing you are looking at.
+
+    Ranking without this is what produced the chair facing 506cm of floor:
+    `_positions` knew where the sofa was and had no opinion about which way the
+    chair was turned. `limit=None` drops the distance test, which is right for
+    a television — the sightline rule sets a MINIMUM viewing distance, not a
+    maximum, so a console has no reason to prefer the near wall.
+    """
+    axis = _lateral_axis(facing)
+    for t in targets:
+        tb = t.footprint()
+        ahead = {
+            "S": tb[1] >= box[3], "N": tb[3] <= box[1],
+            "E": tb[0] >= box[2], "W": tb[2] <= box[0],
+        }[facing]
+        if not ahead or _span_overlap(box, tb, axis) <= 0:
+            continue
+        if limit is None or _gap_between(box, tb) <= limit:
+            return True
+    return False
+
+
+def _faces_centre(box: tuple, facing: str, target: tuple) -> bool:
+    """Is the target's centre on the side this item's front points?
+
+    `_looks_at` cannot answer this for a dining chair: it requires the target
+    to lie wholly beyond the front edge, and a tucked chair overlaps its table
+    by design. Comparing centres says "turned toward" without also saying
+    "clear of".
+    """
+    cx, cy = (target[0] + target[2]) / 2, (target[1] + target[3]) / 2
+    return {
+        "S": cy > (box[1] + box[3]) / 2, "N": cy < (box[1] + box[3]) / 2,
+        "E": cx > (box[0] + box[2]) / 2, "W": cx < (box[0] + box[2]) / 2,
+    }[facing]
+
+
 def _front_space(x: float, y: float, w: float, d: float, facing: str, room: Room) -> float:
     return {
         "N": y, "S": room.depth_cm - (y + d),
@@ -434,6 +494,15 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
     every rule and left nowhere for the coffee table that comes next. Seating
     is now placed with its back to a wall and as much room in front as
     possible, which is both better design and better for what follows.
+
+    EVERY RULE IN `validate_layout` NEEDS A BRANCH HERE. A rule the search
+    cannot satisfy does not improve a layout, it silently deletes a piece of
+    furniture: `bedside_reach` shipped without one and every bedroom
+    immediately reported "no nightstand could be placed anywhere in the room".
+    tv_console, floor_lamp and rug used to fall through to the generic branch
+    below, which wall-hugs toward the origin and knows nothing about the rest
+    of the room — which is the single root cause of three of the four defects
+    the branches above them now address.
     """
     w, d = product.dims.w or 0, product.dims.d or 0
     max_x, max_y = room.width_cm - w, room.depth_cm - d
@@ -446,6 +515,13 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
     anchors = [p for p in placed if p.resolved_role() in {"sofa", "armchair"}]
     sofas = [p for p in placed if p.resolved_role() == "sofa"]
     beds = [p for p in placed if p.resolved_role() == "bed"]
+    # What the four rules added alongside these branches need to see. Each one
+    # is a relationship with something already in the room, so each one needs
+    # the thing it relates to in scope before the ranking can prefer it.
+    focal = [p for p in placed if p.resolved_role() in FOCAL_ROLES]
+    seats = [p for p in placed if p.resolved_role() in LAMP_REACH_ROLES]
+    dining = [p for p in placed if p.resolved_role() == "dining_table"]
+    group_box = _seating_group_box(placed)
     # Pieces of the same kind already in the room. The richer tiers add a
     # SECOND floor lamp and a second seat, and every rule in the engine is
     # satisfied by standing them side by side: the two lamps came out 45 cm
@@ -460,6 +536,8 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
         # Negated so that "far from its twin" sorts first.
         spread = -min((abs(x - p.x) + abs(y - p.y) for p in twins), default=0.0)
 
+        box = (x, y, x + w, y + d)
+
         if role in {"sofa", "armchair"}:
             # Back to a wall, then as much open space in front as the room allows.
             back_to_wall = _front_space(x, y, w, d, _OPPOSITE[facing], room) <= 1
@@ -468,9 +546,70 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
                 # focal point. Ranked purely on back-to-wall it took the far
                 # wall of the room and read as abandoned furniture, so it is
                 # drawn toward the sofa the way the coffee table already is.
+                #
+                # Position was not enough. This branch never inspected `facing`,
+                # so among equally close candidates it took whichever facing
+                # sorted first, and the premium industrial+mid_century room got
+                # a chair at x=280-335 turned south down 506cm of empty floor
+                # with the sofa ending at 273.8. `looks_at` is ranked FIRST
+                # because a chair facing nothing can no longer validate at all:
+                # ordering guaranteed-invalid candidates ahead of valid ones is
+                # how the bedside slot burned its whole position budget.
                 ax, ay, *_ = sofas[0].footprint()
-                return (spread, not back_to_wall, abs(x - ax) + abs(y - ay))
+                return (spread, not _looks_at(box, facing, focal), not back_to_wall,
+                        abs(x - ax) + abs(y - ay))
             return (spread, not back_to_wall, -front, x + y)
+        if role == "tv_console" and anchors:
+            # A console used to fall through to the generic branch, which knows
+            # only about walls and the origin: warm+minimal put a 40cm console
+            # at x=0-40 against a sofa spanning x=120-293, and 15 of 18
+            # living/dining combinations looked past the screen rather than at
+            # it. Rank on the two halves of the sightline rule — a shared
+            # lateral band, and enough distance to watch from — then on facing
+            # the audience, then on hugging a wall, which is where a console
+            # goes once the sightline is settled.
+            axis = _lateral_axis(facing)
+            bands = [(_span_overlap(box, s.footprint(), axis),
+                      _gap_between(box, s.footprint())) for s in anchors]
+            watchable = any(b > 0 and g >= TV_VIEWING_MIN_CM for b, g in bands)
+            return (spread, not watchable,
+                    not _looks_at(box, facing, anchors, limit=None),
+                    not touching, -max(b for b, _ in bands), x + y)
+        if role == "floor_lamp" and seats:
+            # Same generic-branch failure, and the most common of the four: 73
+            # of 107 generated lamps stood more than 90cm from any seat because
+            # nothing in the ordering knew a seat existed. Nearest seat first.
+            #
+            # `spread` still leads, so the premium tier's SECOND lamp is still
+            # pushed away from the first — the rule only ever asked for one
+            # lamp to be within reach, and a branch that dragged both to the
+            # same sofa would undo the twins logic on purpose.
+            return (spread, min(_gap_between(box, s.footprint()) for s in seats),
+                    not touching, x + y)
+        if role == "rug" and group_box is not None:
+            # A rug is laid under the group, so rank on how much of the group
+            # it actually covers. The generic branch sent a 120x120cm rug to
+            # the origin corner, where it met the sofa exactly at x=120 —
+            # touching along a line and sharing no area with anything.
+            shared = (_span_overlap(box, group_box, "x")
+                      * _span_overlap(box, group_box, "y"))
+            smaller = min(w * d, (group_box[2] - group_box[0])
+                          * (group_box[3] - group_box[1]))
+            return (spread, -shared / smaller if smaller else 0.0, x + y)
+        if role in DINING_CHAIR_ROLES and dining:
+            # A dining chair belongs pushed up to its table, which is the one
+            # place in this engine where overlap is CORRECT — COMPANION_PAIRS
+            # exempts the pair from the collision check for exactly that
+            # reason. So the order is: facing the table, then touching it, then
+            # tucked under it as little as possible. Ranking on raw separation
+            # would have put the chair in the middle of the table (distance
+            # zero, the best possible score), which is the mistake the bedside
+            # branch made the other way round.
+            table = dining[0].footprint()
+            tucked = (_span_overlap(box, table, "x")
+                      * _span_overlap(box, table, "y")) / (w * d or 1)
+            return (spread, not _faces_centre(box, facing, table),
+                    _gap_between(box, table), tucked, x + y)
         if role in BEDSIDE_ROLES and beds:
             # A bedside table has to end up within arm's reach of the pillow,
             # and the generic wall-hugging order never got near it: every

@@ -174,24 +174,68 @@ function buildShell(target, roomCm, label) {
   grid.position.y = 0.004;
   target.add(grid);
 
-  // The entrance, so the room has an orientation and "needs tipping at the
-  // flat entrance" has something to point at. Width comes from the server.
+  // The entrance. It was drawn before, but you could not see it: a 16%-opacity
+  // square (not an arc) in the old dark-theme amber, always pinned to the north
+  // wall whatever `door.wall` said. Asked "where's the door, no marking", which
+  // was fair — the engine checks the swing and the render never showed it.
+  //
+  // Now: a real quarter-disc for the swing, a bright threshold across the
+  // opening, jambs either side, and the word DOOR on the floor. The room needs
+  // an orientation for "needs tipping at the flat entrance" to point at, and a
+  // reviewer cannot judge a layout without knowing which way they walk in.
   for (const door of room.doors ?? []) {
     const leaf = door.width_cm * CM;
-    const sweep = new THREE.Mesh(
-      new THREE.PlaneGeometry(leaf, leaf),
-      new THREE.MeshBasicMaterial({ color: 0xd29922, transparent: true, opacity: 0.16, side: THREE.DoubleSide }),
-    );
-    sweep.rotation.x = -Math.PI / 2;
-    sweep.position.set(door.offset_cm * CM + leaf / 2 - W / 2, 0.006, -D / 2 + leaf / 2);
-    target.add(sweep);
+    const along = door.offset_cm * CM + leaf / 2;      // centre, along its wall
+    const g = new THREE.Group();
 
-    const jamb = new THREE.Mesh(
-      new THREE.BoxGeometry(leaf, 0.06, 0.05),
-      new THREE.MeshBasicMaterial({ color: 0xd29922 }),
-    );
-    jamb.position.set(sweep.position.x, 0.03, -D / 2);
-    target.add(jamb);
+    // Quarter-disc, hinged at the jamb, opening into the room.
+    const arc = new THREE.Mesh(
+      new THREE.CircleGeometry(leaf, 24, 0, Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: DOOR_INK, transparent: true,
+                                    opacity: 0.22, side: THREE.DoubleSide }));
+    arc.rotation.x = -Math.PI / 2;
+    arc.position.set(-leaf / 2, 0.008, 0);
+    g.add(arc);
+    const edge = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(
+        [...Array(25)].map((_, i) => {
+          const a = (i / 24) * Math.PI / 2;
+          return new THREE.Vector3(-leaf / 2 + Math.cos(a) * leaf, 0.01, Math.sin(a) * leaf);
+        })),
+      new THREE.LineBasicMaterial({ color: DOOR_INK, transparent: true, opacity: 0.75 }));
+    g.add(edge);
+
+    // The opening itself: a bright strip across the threshold, and a jamb post
+    // at each side so the gap in the wall is unmistakable from any angle.
+    const sill = new THREE.Mesh(
+      new THREE.BoxGeometry(leaf, 0.012, 0.09),
+      new THREE.MeshBasicMaterial({ color: DOOR_INK }));
+    sill.position.y = 0.006;
+    g.add(sill);
+    // The opening drawn ON the wall plane rather than as two free-standing
+    // posts. The posts were geometrically right and read, in the iso view, as
+    // a pair of decorative poles standing in the middle of the room; a framed
+    // panel in the wall reads as a doorway from any angle.
+    const tall = 2.05 * (H / 2.9);
+    const panel = new THREE.Mesh(
+      new THREE.PlaneGeometry(leaf, tall),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true,
+                                    opacity: 0.55, side: THREE.DoubleSide }));
+    panel.position.set(0, tall / 2, 0.012);
+    g.add(panel);
+    const frame = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.PlaneGeometry(leaf, tall)),
+      new THREE.LineBasicMaterial({ color: DOOR_INK }));
+    frame.position.set(0, tall / 2, 0.014);
+    g.add(frame);
+    g.add(doorLabel(leaf));
+
+    // Seat it on whichever wall the plan actually names.
+    if (door.wall === 'S')      { g.position.set(along - W / 2, 0,  D / 2); g.rotation.y = Math.PI; }
+    else if (door.wall === 'W') { g.position.set(-W / 2, 0, along - D / 2); g.rotation.y = -Math.PI / 2; }
+    else if (door.wall === 'E') { g.position.set( W / 2, 0, along - D / 2); g.rotation.y = Math.PI / 2; }
+    else                        { g.position.set(along - W / 2, 0, -D / 2); }
+    target.add(g);
   }
 
   const wallMat = new THREE.MeshStandardMaterial({
@@ -206,6 +250,26 @@ function buildShell(target, roomCm, label) {
   target.add(west);
 
   if (label) target.add(roomLabel(label, W, D));
+}
+
+/** The word DOOR on the threshold, so the opening is legible from any
+ *  camera angle rather than only in plan. */
+function doorLabel(leaf) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = '#8a5a00';
+  g.font = '700 46px ui-sans-serif, system-ui, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.letterSpacing = '4px';
+  g.fillText('DOOR', 128, 34);
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(leaf * 1.5, leaf * 1.5 / 4),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c),
+                                  transparent: true, depthTest: false }));
+  m.rotation.x = -Math.PI / 2;
+  m.position.set(0, 0.016, leaf * 0.5);
+  return m;
 }
 
 /** A floating name so a row of rooms can be told apart. */
@@ -249,6 +313,8 @@ function placeItems(target, placed, roomCm) {
 // delivery check, and the panel says so in words as well.
 
 const GHOST = suggestionHex;
+// The doorway, in the same ink the panel spends on 'mind this'.
+const DOOR_INK = 0x8a5a00;
 
 function ghostMaterial(opacity) {
   return new THREE.MeshStandardMaterial({
