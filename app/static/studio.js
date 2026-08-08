@@ -1,249 +1,50 @@
-/* eazli studio.
+/* eazli studio — data, reasoning and UI.
  *
  * The browser draws and drags. It never decides. Every arrangement — after a
- * plan, a swap, or a drag — is posted to /plan/swap and the verdict comes back
- * from app/geometry.py, the same module the tests and the agents call.
+ * plan, a swap, or a drag — is judged by app/geometry.py: live over HTTP when
+ * the service is running, or replayed from verdicts that same engine produced
+ * at build time when this is the static Pages build.
  *
- * That boundary is the whole point of the project, so it is worth stating in
- * the code: there is no geometry in this file beyond turning centimetres into
- * metres for three.js.
+ * There is deliberately no geometry in this file. The 3D viewport lives in
+ * viewer.js and is imported dynamically, so ~490 KB of three.js does not block
+ * the plan and its reasoning from painting.
  */
 
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { PALETTE } from './palette.js';
 
-const CM = 0.01;                       // engine speaks centimetres, three.js metres
-const COLOR = {
-  sofa: 0x4c6ef5, coffee_table: 0x12b886, dining_table: 0xe8590c,
-  floor_lamp: 0xae3ec9, tv_console: 0x5c7cfa, bed: 0x4c6ef5,
-  wardrobe: 0x7950f2, dining_chairs_pair: 0xf59f00, other: 0x8b98a5,
+const $ = (s) => document.querySelector(s);
+const state = {
+  plan: null, room: null, style: [], assumptions: [],
+  viewer: null, view: 'iso',
 };
+
+// The viewport is optional scenery: if three.js fails to load, the plan, the
+// verdicts and the reasoning all still work.
+const viewerReady = import('./viewer.js')
+  .then((mod) => { mod.init($('#canvas-host')); state.viewer = mod; return mod; })
+  .catch((err) => {
+    $('#canvas-host').innerHTML =
+      `<p class="viewport-fallback">3D view unavailable (${err.message}).
+       Every plan, verdict and reason below still works.</p>`;
+    return null;
+  });
+
 const CATEGORY_FOR_ROLE = {
   sofa: 'sofa', coffee_table: 'coffee_table', dining_table: 'dining_table',
   floor_lamp: 'floor_lamp', tv_console: 'tv_unit', bed: 'bed', wardrobe: 'wardrobe',
 };
 
-const $ = (s) => document.querySelector(s);
-const state = { plan: null, room: null, style: [], assumptions: [], selected: null, meshes: new Map() };
-
-// ---------------------------------------------------------------- 3D scene
-
-const host = $('#canvas-host');
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0e13);
-scene.fog = new THREE.Fog(0x0b0e13, 22, 60);
-
-const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-host.appendChild(renderer.domElement);
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.maxPolarAngle = Math.PI / 2 - 0.02;   // never go under the floor
-
-scene.add(new THREE.HemisphereLight(0xffffff, 0x4a5361, 2.2));
-const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
-keyLight.position.set(6, 11, 5);
-keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(2048, 2048);
-Object.assign(keyLight.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12, far: 40 });
-scene.add(keyLight);
-
-const world = new THREE.Group();
-scene.add(world);
-
-function resize() {
-  const { clientWidth: w, clientHeight: h } = host;
-  if (!w || !h) return;
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  // updateStyle must stay on. Passing `false` here left the canvas at its
-  // intrinsic 300x150 CSS size — the drawing buffer was right and the element
-  // on screen was a postage stamp.
-  renderer.setSize(w, h);
-}
-new ResizeObserver(resize).observe(host);
-addEventListener('resize', resize);
-
-(function loop() {
-  requestAnimationFrame(loop);
-  controls.update();
-  renderer.render(scene, camera);
-})();
-
-// Exposed so the scene can be inspected without a visible window. A hidden or
-// minimised tab never fires requestAnimationFrame, so "nothing is drawn" and
-// "nothing is there" look identical from outside — this tells them apart.
-window.__studio = { scene, camera, renderer, world, state, render: () => renderer.render(scene, camera) };
-
-// ---------------------------------------------------------------- geometry → mesh
-
-function clear(group) {
-  while (group.children.length) {
-    const c = group.children.pop();
-    c.traverse?.((o) => { o.geometry?.dispose(); o.material?.dispose?.(); });
-  }
-}
-
-/** Engine coords (x east, y south, origin NW) → three.js (x east, z south, centred). */
-function toWorld(x, y, w, d, room) {
-  return {
-    x: (x + w / 2 - room.width / 2) * CM,
-    z: (y + d / 2 - room.depth / 2) * CM,
-  };
-}
-
-function buildRoom(room) {
-  clear(world);
-  state.meshes.clear();
-  const W = room.width * CM, D = room.depth * CM, H = room.height * CM;
-
-  const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(W, D),
-    new THREE.MeshStandardMaterial({ color: 0x5c6672, roughness: 0.92 }),
-  );
-  floor.rotation.x = -Math.PI / 2;
-  floor.receiveShadow = true;
-  world.add(floor);
-
-  // A GridHelper is always square, so on a 3.35 x 5.51m room it hung a metre
-  // off both long sides and read as a rendering fault. Draw the metre lines
-  // inside the actual floor rectangle instead.
-  const lines = [];
-  for (let x = 1; x < room.width / 100; x++) {
-    const px = x * 100 * CM - W / 2;
-    lines.push(px, 0, -D / 2, px, 0, D / 2);
-  }
-  for (let z = 1; z < room.depth / 100; z++) {
-    const pz = z * 100 * CM - D / 2;
-    lines.push(-W / 2, 0, pz, W / 2, 0, pz);
-  }
-  const gridGeo = new THREE.BufferGeometry();
-  gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(lines, 3));
-  const grid = new THREE.LineSegments(
-    gridGeo,
-    new THREE.LineBasicMaterial({ color: 0x9aa4b0, transparent: true, opacity: 0.35 }),
-  );
-  grid.position.y = 0.004;
-  world.add(grid);
-
-  // The entrance, so the room has an orientation. Without it the viewer cannot
-  // tell which end is the door, and "needs tipping at the flat entrance" has
-  // nothing to point at.
-  for (const door of room.doors ?? []) {
-    const leaf = door.width_cm * CM;
-    const sweep = new THREE.Mesh(
-      new THREE.PlaneGeometry(leaf, leaf),
-      new THREE.MeshBasicMaterial({ color: 0xd29922, transparent: true, opacity: 0.16, side: THREE.DoubleSide }),
-    );
-    sweep.rotation.x = -Math.PI / 2;
-    sweep.position.set(door.offset_cm * CM + leaf / 2 - W / 2, 0.006, -D / 2 + leaf / 2);
-    world.add(sweep);
-
-    const jamb = new THREE.Mesh(
-      new THREE.BoxGeometry(leaf, 0.06, 0.05),
-      new THREE.MeshBasicMaterial({ color: 0xd29922 }),
-    );
-    jamb.position.set(sweep.position.x, 0.03, -D / 2);
-    world.add(jamb);
-  }
-
-  // Two walls only: enough to read the space, low enough to see into it.
-  const wallMat = new THREE.MeshStandardMaterial({
-    color: 0x788393, roughness: 1, transparent: true, opacity: 0.4, side: THREE.DoubleSide,
-  });
-  const north = new THREE.Mesh(new THREE.PlaneGeometry(W, H), wallMat);
-  north.position.set(0, H / 2, -D / 2);
-  world.add(north);
-  const west = new THREE.Mesh(new THREE.PlaneGeometry(D, H), wallMat);
-  west.rotation.y = Math.PI / 2;
-  west.position.set(-W / 2, H / 2, 0);
-  world.add(west);
-}
-
-function addItem(item, room) {
-  const { w, d, h } = item.dims_cm;
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(w * CM, h * CM, d * CM),
-    new THREE.MeshStandardMaterial({
-      color: COLOR[item.role] ?? COLOR.other, roughness: 0.6, metalness: 0.05,
-    }),
-  );
-  const { x, z } = toWorld(item.x, item.y, w, d, room);
-  mesh.position.set(x, (h * CM) / 2, z);
-  mesh.castShadow = mesh.receiveShadow = true;
-  mesh.userData.slot = item.slot_id;
-
-  const edges = new THREE.LineSegments(
-    new THREE.EdgesGeometry(mesh.geometry),
-    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.22 }),
-  );
-  mesh.add(edges);
-
-  world.add(mesh);
-  state.meshes.set(item.slot_id, mesh);
-}
-
-// Unfilled slots are deliberately NOT drawn in the room.
-//
-// They were, as translucent footprints — at Math.random() positions, because
-// the planner never computed a position for something it could not place.
-// A marker on the floor asserts a location, and inventing one to represent
-// "we found nothing" is the same class of lie as guessing a dimension. The
-// panel lists every unfilled slot with the measurement that ruled its
-// candidates out, which is the honest place for it.
-
-// ---------------------------------------------------------------- views
-
-/** Distance at which a room of this size fills the frame, given the current
- *  field of view and aspect. Fixed multipliers cropped furniture off the edge
- *  as soon as the room was not the shape they were tuned for. */
-function fitDistance(room, margin = 1.25) {
-  const W = room.width * CM, D = room.depth * CM, H = room.height * CM;
-  const radius = Math.hypot(W, D, H) / 2;
-  const vFov = (camera.fov * Math.PI) / 180;
-  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
-  return (radius / Math.sin(Math.min(vFov, hFov) / 2)) * margin;
-}
-
-/** Place the camera along a unit direction at exactly the fitting distance.
- *  Scaling a non-unit vector by that distance put it ~20% too close and
- *  cropped the floor off two edges. */
-function along(dir, distance) {
-  const len = Math.hypot(...dir);
-  return dir.map((c) => (c / len) * distance);
-}
-
-const VIEWS = {
-  iso: (r) => ({ p: along([0.85, 0.78, 0.85], fitDistance(r)), t: [0, 0.35, 0] }),
-  top: (r) => ({ p: [0, fitDistance(r, 1.1), 0.001], t: [0, 0, 0] }),
-  eye: (r) => ({ p: [0, 1.55, r.depth * CM * 0.52], t: [0, 1.15, -r.depth * CM * 0.3] }),
-};
-
-function setView(name) {
-  if (!state.room) return;
-  const { p, t } = VIEWS[name](state.room);
-  camera.position.set(...p);
-  controls.target.set(...t);
-  controls.update();
-  document.querySelectorAll('#viewtools button').forEach((b) =>
-    b.classList.toggle('active', b.dataset.view === name));
-}
 
 // ---------------------------------------------------------------- rendering the plan
 
 function render(plan) {
   state.plan = plan;
   state.room = plan.room_cm;
-  buildRoom(plan.room_cm);
-  plan.placed.forEach((i) => addItem(i, plan.room_cm));
+  // Text first, always. The room follows whenever three.js has landed.
   paintVerdict(plan.validation, plan.total_sar, plan.budget_sar);
   paintHow(plan);
   paintPanel(plan);
+  viewerReady.then((v) => { if (v) { v.draw(plan); v.setView(state.view); } });
 }
 
 function paintHow(plan) {
@@ -340,7 +141,7 @@ function paintPanel(plan) {
   $('#items').innerHTML = plan.placed.map((i) => `
     <div class="item" data-slot="${i.slot_id}" data-role="${i.role}">
       <div class="item-head">
-        <span class="swatch" style="background:#${(COLOR[i.role] ?? COLOR.other).toString(16).padStart(6, '0')}"></span>
+        <span class="swatch" style="background:${PALETTE[i.role] ?? PALETTE.other}"></span>
         <div class="item-main">
           <div class="slot">${i.slot_id.replace(/_/g, ' ')}</div>
           <div class="name">${esc(i.title)}</div>
@@ -400,8 +201,7 @@ function paintPanel(plan) {
 }
 
 function highlight(slot, on) {
-  const m = state.meshes.get(slot);
-  if (m) m.material.emissive = new THREE.Color(on ? 0x2b4a7a : 0x000000);
+  state.viewer?.highlight(slot, on);
 }
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
@@ -494,50 +294,94 @@ async function applySwap(slotId, pick) {
  * rather than guessed at, because guessing is the one thing the project exists
  * not to do.
  */
-const BUNDLE = window.__STATIC_BUNDLE ?? null;
-const STATIC = !!BUNDLE;
-const planKey = (u, r, s) => `${u}|${r}|${(s ?? []).join(',')}`;
+/* Two modes, one call site.
+ *
+ * Live: POST to FastAPI, which runs app/geometry.py per request.
+ * Static: fetch verdicts PRE-computed by that same Python, for hosting
+ *         somewhere that cannot run a backend (GitHub Pages).
+ *
+ * The static mode is a replay of real engine output, not a JavaScript
+ * reimplementation of the rules — there is deliberately no geometry in this
+ * file. A combination the build does not contain is reported as unavailable
+ * rather than guessed at, because guessing is the one thing the project exists
+ * not to do.
+ *
+ * Everything is fetched on demand. The build used to ship one 2.5 MB blob
+ * containing all 50 plans and all 1,075 swap verdicts, parsed before the first
+ * frame — 90% of it for interactions a visitor may never make.
+ */
+const STATIC = document.documentElement.dataset.mode === 'static';
+const planKey = (u, r, s) => `${u}__${r}__${(s ?? []).length ? s.join('-') : 'any'}`;
+
+const cache = new Map();
+async function json(url) {
+  if (!cache.has(url)) {
+    cache.set(url, fetch(url).then((r) => {
+      if (!r.ok) throw new Error(`${url} \u2192 ${r.status}`);
+      return r.json();
+    }));
+  }
+  return cache.get(url);
+}
 
 async function api(path, body) {
   if (STATIC) return staticApi(path, body);
   const res = await fetch(path, body
     ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
     : undefined);
-  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  if (!res.ok) throw new Error(`${path} \u2192 ${res.status}`);
   return res.json();
 }
 
-function staticApi(path, body) {
-  if (path === '/home/units') return BUNDLE.units;
+const NOT_BUILT = {
+  validation: {
+    status: 'unverified',
+    reasons: ['This combination was not precomputed for the static build. Run the '
+            + 'studio locally to have the engine judge it live: '
+            + 'uv run uvicorn app.main:app --port 8000'],
+  },
+  access: {},
+};
+
+async function staticApi(path, body) {
+  if (path === '/home/units') return json('./data/index.json');
+
   if (path.startsWith('/plan/candidates/')) {
     const cat = path.split('/').pop();
-    return BUNDLE.candidates[cat] ?? { category: cat, count: 0, items: [] };
-  }
-  if (path === '/plan/auto') {
-    const plan = BUNDLE.plans[planKey(body.unit, body.room, body.style)];
-    if (!plan) throw new Error(`This build has no precomputed plan for ${body.room}.`);
-    return structuredClone(plan);
-  }
-  if (path === '/plan/swap') {
-    // Look up by full context. A verdict is a property of the arrangement, not
-    // of the item on its own.
-    const ctx = planKey(body.unit, body.room, state.style);
-    const swapped = body.placements.find((p) => BUNDLE.swaps[`${ctx}|${p.slot_id}|${p.asin}`]);
-    const hit = swapped && BUNDLE.swaps[`${ctx}|${swapped.slot_id}|${swapped.asin}`];
-    if (!hit) {
-      return {
-        validation: {
-          status: 'unverified',
-          reasons: ['This exact combination was not precomputed for the static build. '
-                  + 'Run the studio locally to have the engine judge it live: '
-                  + 'uv run uvicorn app.main:app --port 8000'],
-        },
-        access: {},
-        total_sar: body.placements.reduce((t, p) => t + (p.price_sar || 0), 0),
-      };
+    try {
+      return await json(`./data/candidates/${cat}.json`);
+    } catch {
+      return { category: cat, count: 0, items: [] };
     }
-    return structuredClone(hit);
   }
+
+  if (path === '/plan/auto') {
+    try {
+      return structuredClone(await json(
+        `./data/plans/${planKey(body.unit, body.room, body.style)}.json`));
+    } catch {
+      throw new Error(`This build has no precomputed plan for ${body.room.replace(/_/g, ' ')}.`);
+    }
+  }
+
+  if (path === '/plan/swap') {
+    const ctx = planKey(body.unit, body.room, state.style);
+    let table;
+    try {
+      table = await json(`./data/swaps/${ctx}.json`);
+    } catch {
+      return { ...structuredClone(NOT_BUILT),
+               total_sar: body.placements.reduce((t, p) => t + (p.price_sar || 0), 0) };
+    }
+    const hit = body.placements
+      .map((p) => table[`${p.slot_id}|${p.asin}`])
+      .find(Boolean);
+    return hit
+      ? structuredClone(hit)
+      : { ...structuredClone(NOT_BUILT),
+          total_sar: body.placements.reduce((t, p) => t + (p.price_sar || 0), 0) };
+  }
+
   throw new Error(`no static data for ${path}`);
 }
 
@@ -552,7 +396,6 @@ async function runPlan() {
       budget_sar: Number($('#budget').value), style,
     });
     render(plan);
-    setView('iso');
   } catch (err) {
     // Leaving the previous verdict on screen would claim the plan shown is
     // still verified. It is not: it is whatever was there before the failure.
@@ -593,11 +436,16 @@ async function boot() {
   $('#budget').onchange = runPlan;
   $('#picker-close').onclick = () => { $('#picker').hidden = true; };
   $('#picker').onclick = (e) => { if (e.target.id === 'picker') $('#picker').hidden = true; };
-  document.querySelectorAll('#viewtools button').forEach((b) =>
-    b.onclick = () => setView(b.dataset.view));
+  document.querySelectorAll('#viewtools button').forEach((b) => {
+    b.onclick = () => {
+      state.view = b.dataset.view;
+      state.viewer?.setView(state.view);
+      document.querySelectorAll('#viewtools button').forEach((o) =>
+        o.classList.toggle('active', o.dataset.view === state.view));
+    };
+  });
   addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#picker').hidden = true; });
 
-  resize();
   await runPlan();
 }
 

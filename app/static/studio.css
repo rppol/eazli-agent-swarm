@@ -291,3 +291,8 @@ code { font: 11px var(--mono); background: var(--panel-2); padding: 1px 4px; bor
   border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
 }
 #verdict-why[hidden] { display: none; }
+
+.viewport-fallback {
+  position: absolute; inset: 0; margin: 0; display: grid; place-content: center;
+  text-align: center; padding: 24px; color: var(--muted); font-size: 13px; line-height: 1.6;
+}

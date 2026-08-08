@@ -28,7 +28,10 @@ jobs:
       # silently — no console error reaches any test that reads the file as text.
       # A duplicate top-level `const key` shipped exactly that way once.
       - name: Parse the studio JavaScript
-        run: node --input-type=module --check < app/static/studio.js
+        run: |
+          for f in studio viewer palette; do
+            node --input-type=module --check < "app/static/$f.js"
+          done
 
       - name: Unit and integration tests
         run: uv run pytest -q

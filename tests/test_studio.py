@@ -183,22 +183,27 @@ def test_root_redirects_to_the_studio(client):
 # the static build
 # --------------------------------------------------------------------------
 
-def test_static_bundle_keys_match_what_the_frontend_computes():
-    """The exporter writes keys and studio.js reads them. Nothing else couples
-    the two, so a format change on either side would silently produce a site
-    where every swap reports 'not precomputed'.
+def test_static_context_key_matches_between_exporter_and_frontend():
+    """The exporter names data files and studio.js fetches them. Nothing else
+    couples the two, so a format change on either side would silently produce a
+    site where every plan looks missing.
     """
-    import re
     from pathlib import Path
 
-    js = Path("app/static/studio.js").read_text(encoding="utf-8")
-    # frontend: `${u}|${r}|${(s ?? []).join(',')}` then `${ctx}|${slot}|${asin}`
-    assert "const planKey = (u, r, s) => `${u}|${r}|${(s ?? []).join(',')}`" in js
-    assert re.search(r"BUNDLE\.swaps\[`\$\{ctx\}\|\$\{[a-z]+\.slot_id\}\|\$\{[a-z]+\.asin\}`\]", js)
+    from tools.export_static import slug
 
-    exporter = Path("tools/export_static.py").read_text(encoding="utf-8")
-    assert "f\"{unit.id}|{room.name}|{','.join(style)}\"" in exporter
-    assert "f\"|{placed['slot_id']}|{cand['asin']}\"" in exporter
+    js = Path("app/static/studio.js").read_text(encoding="utf-8")
+    assert ("const planKey = (u, r, s) => "
+            "`${u}__${r}__${(s ?? []).length ? s.join('-') : 'any'}`") in js
+
+    # Same three cases, both spellings.
+    for unit, room, style in [
+        ("unit01", "living_dining", ["warm", "minimal"]),
+        ("unit04", "master_bedroom_1", []),
+        ("unit05", "bedroom", ["boho", "scandi"]),
+    ]:
+        expected = f"{unit}__{room}__{'-'.join(style) if style else 'any'}"
+        assert slug(unit, room, style) == expected
 
 
 def test_static_studio_falls_back_rather_than_guessing():
@@ -209,7 +214,7 @@ def test_static_studio_falls_back_rather_than_guessing():
 
     js = Path("app/static/studio.js").read_text(encoding="utf-8")
     assert "'unverified'" in js
-    assert "not precomputed" in js
+    assert "was not precomputed" in js
 
 
 def test_the_studio_frontend_contains_no_geometry():
@@ -261,10 +266,12 @@ def test_unfilled_slots_are_not_drawn_at_invented_positions():
     of lie as guessing a dimension."""
     from pathlib import Path
 
-    js = Path("app/static/studio.js").read_text(encoding="utf-8")
-    body = "\n".join(l for l in js.splitlines() if not l.strip().startswith(("//", "*", "/*")))
-    assert "Math.random" not in body
-    assert "addGhost" not in body
+    for name in ("studio.js", "viewer.js"):
+        js = Path(f"app/static/{name}").read_text(encoding="utf-8")
+        body = "\n".join(l for l in js.splitlines()
+                          if not l.strip().startswith(("//", "*", "/*")))
+        assert "Math.random" not in body, name
+        assert "addGhost" not in body, name
 
 
 def test_a_failed_refresh_does_not_leave_a_stale_pass_on_screen():
@@ -281,3 +288,34 @@ def test_unfilled_reasons_do_not_leak_schema_underscores():
     p = auto_plan("unit01", "bedroom", 450)
     for u in p.unfilled:
         assert "floor_lamp" not in u.reason and "dining_table" not in u.reason, u.reason
+
+
+def test_three_js_is_not_in_the_first_paint_bundle():
+    """three.js is ~480 KB minified and 97% of the page's JavaScript. The plan,
+    the reasoning and the verdict are text and must not wait on it."""
+    from pathlib import Path
+
+    js = Path("app/static/studio.js").read_text(encoding="utf-8")
+    assert "import * as THREE" not in js, "three.js must not be a static import here"
+    assert "import('./viewer.js')" in js, "the viewer must load dynamically"
+
+
+def test_the_palette_has_one_definition():
+    """The swatch in the panel and the material in the viewport were separate
+    maps, so a legend dot could drift from the object it labelled."""
+    from pathlib import Path
+
+    palette = Path("app/static/palette.js").read_text(encoding="utf-8")
+    assert "export const PALETTE" in palette
+    for name in ("studio.js", "viewer.js"):
+        js = Path(f"app/static/{name}").read_text(encoding="utf-8")
+        assert "./palette.js" in js, f"{name} should import the shared palette"
+        assert "const SWATCH" not in js and "const COLOR = {" not in js
+
+
+def test_the_viewport_is_optional_scenery():
+    """If three.js fails, the plan, verdicts and reasoning must still work."""
+    from pathlib import Path
+
+    js = Path("app/static/studio.js").read_text(encoding="utf-8")
+    assert ".catch(" in js and "viewport-fallback" in js
