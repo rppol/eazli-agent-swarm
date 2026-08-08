@@ -56,6 +56,26 @@ RULES: dict[str, dict] = {
         "text": "A dining chair needs about 75cm behind it to push back and stand "
                 "up. In front of it is the table, not a walkway.",
     },
+    "reach_clearance": {
+        "value_cm": 75,
+        "text": "Storage has to open. A wardrobe door or a drawer needs about "
+                "75cm in front of it and a bookshelf about 45cm to reach a "
+                "shelf and read a spine. Clearance between footprints says "
+                "nothing about whether the doors will open.",
+    },
+    "bedside_reach": {
+        "value_cm": 30,
+        "text": "A bedside table is for the lamp, the book and the glass of "
+                "water, so it has to be within arm's reach of the pillow — "
+                "touching the bed, or within about 30cm of it, and alongside "
+                "rather than beyond the foot.",
+    },
+    "bed_access": {
+        "value_cm": 60,
+        "text": "You have to be able to get into the bed. At least one long "
+                "side needs about 60cm clear of walls and furniture; a double "
+                "shared by two people wants that on both sides.",
+    },
     "coffee_table_reach": {
         "value_cm": 100,
         "text": "A coffee table has to be reachable from the seating it serves — "
@@ -155,12 +175,32 @@ KNOWN_ROLES = SEATING_ROLES | TABLE_ROLES | WALL_ROLES
 #
 # Both check_fit and validate_layout resolve clearance through this table, so
 # the two endpoints cannot disagree about the same item again.
+# What has to open, and how much room it needs to do it. Everything in
+# WALL_ROLES used to be 0.0, which let the planner stand an armchair flat
+# against 180cm of shelving and call the room a pass — the footprints did not
+# overlap, so nothing objected. A gap between two boxes is not the same claim
+# as "you can use both of them".
+REACH_DOOR_CM = RULES["reach_clearance"]["value_cm"]     # hinged door, drawer
+REACH_SHELF_CM = 45.0                                    # reach in, read a spine
+STORAGE_REACH_BY_ROLE: dict[str, float] = {
+    "wardrobe": REACH_DOOR_CM,
+    "bookshelf": REACH_SHELF_CM,
+}
+
 FRONT_CLEARANCE_BY_ROLE: dict[str, float] = {
     **{r: WALKWAY_PRIMARY_CM for r in SEATING_ROLES},
     **{r: WALKWAY_SECONDARY_CM for r in TABLE_ROLES},
     **{r: WALKWAY_SECONDARY_CM for r in DINING_CHAIR_ROLES},
     **{r: 0.0 for r in WALL_ROLES},
+    # A TV console is looked at from across the room and a bed is got into
+    # from the side, so neither wants a front rule; both are handled elsewhere
+    # or not at all. Storage is the exception that needed one.
+    **STORAGE_REACH_BY_ROLE,
 }
+
+BEDSIDE_REACH_CM = RULES["bedside_reach"]["value_cm"]
+BED_ACCESS_CM = RULES["bed_access"]["value_cm"]
+BEDSIDE_ROLES = {"side_table", "nightstand", "table"}
 
 
 def front_clearance_for(role: str | None) -> float | None:
@@ -454,6 +494,9 @@ COMPANION_PAIRS = [
     {"sofa", "coffee_table"},
     {"armchair", "coffee_table"},
     *({"dining_table", r} for r in DINING_CHAIR_ROLES),
+    # A bedside table belongs pressed against the bed. Counting it as an
+    # obstruction rejected the one arrangement that is actually correct.
+    *({"bed", r} for r in ("side_table", "nightstand", "table")),
 ]
 
 
@@ -536,7 +579,79 @@ def validate_layout(room: Room, placements: Sequence[Placement]) -> Verdict:
             )
             statuses.append("fail")
 
+    # Usability, after geometry. Everything above asks whether the boxes fit;
+    # these ask whether a person could use what is in them.
+    ergonomic = _bedside_within_reach(placements) + _bed_can_be_got_into(room, placements)
+    if ergonomic:
+        reasons.extend(ergonomic)
+        statuses.append("fail")
+
     return Verdict(status=_combine(statuses), reasons=reasons)
+
+
+def _bedside_within_reach(placements) -> list[str]:
+    """A bedside table has to be beside the bed.
+
+    A generated bedroom put a 40cm side table 35cm clear of the bed and level
+    with nothing, and it passed: it overlapped nothing and cleared every
+    walkway. Nobody could have reached it from the pillow, which is the only
+    thing a bedside table is for.
+    """
+    beds = [p for p in placements if p.resolved_role() == "bed" and p.dims.known]
+    if not beds:
+        return []                    # a side table in a living room is not this
+    out: list[str] = []
+    for tbl in placements:
+        if tbl.resolved_role() not in BEDSIDE_ROLES or not tbl.dims.known:
+            continue
+        gap = min(_gap_between(tbl.footprint(), b.footprint()) for b in beds)
+        if gap > BEDSIDE_REACH_CM:
+            out.append(
+                f"{tbl.item_id} is {gap:.0f}cm from the bed. A bedside table has to "
+                f"be within {BEDSIDE_REACH_CM:.0f}cm to be reachable from the "
+                f"pillow — beyond that it is a side table standing on its own."
+            )
+    return out
+
+
+def _bed_can_be_got_into(room: Room, placements) -> list[str]:
+    """At least one long side of a bed needs room to stand and get in.
+
+    Long sides only: the head is against something by design, and the foot is
+    not how anyone gets into bed.
+    """
+    out: list[str] = []
+    for bed in placements:
+        if bed.resolved_role() != "bed" or not bed.dims.known:
+            continue
+        x0, y0, x1, y1 = bed.footprint()
+        horizontal = (x1 - x0) >= (y1 - y0)      # which way the mattress lies
+        sides = ((("N", y0), ("S", room.depth_cm - y1)) if horizontal
+                 else (("W", x0), ("E", room.width_cm - x1)))
+        best = 0.0
+        for wall, to_wall in sides:
+            clear = to_wall
+            for o in placements:
+                if o is bed or not o.dims.known:
+                    continue
+                if (o.dims.h or 0) <= FLOOR_COVERING_MAX_H_CM:
+                    continue             # a rug is not an obstruction
+                ox0, oy0, ox1, oy1 = o.footprint()
+                if horizontal and ox1 > x0 and ox0 < x1:
+                    d = (y0 - oy1) if wall == "N" else (oy0 - y1)
+                elif not horizontal and oy1 > y0 and oy0 < y1:
+                    d = (x0 - ox1) if wall == "W" else (ox0 - x1)
+                else:
+                    continue
+                if d >= 0:
+                    clear = min(clear, d)
+            best = max(best, clear)
+        if best < BED_ACCESS_CM:
+            out.append(
+                f"{bed.item_id} has only {best:.0f}cm clear on its most open long "
+                f"side. Getting into bed needs about {BED_ACCESS_CM:.0f}cm."
+            )
+    return out
 
 
 def _flip(placement: Placement) -> Placement:

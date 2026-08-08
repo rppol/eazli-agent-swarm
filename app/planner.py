@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass, field
 from app.catalog import Product, parse_capture
 from app import styling
 from app.geometry import (
+    BEDSIDE_ROLES,
     Dims,
     Placement,
     Room,
@@ -444,6 +445,7 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
     role = slot["role"]
     anchors = [p for p in placed if p.resolved_role() in {"sofa", "armchair"}]
     sofas = [p for p in placed if p.resolved_role() == "sofa"]
+    beds = [p for p in placed if p.resolved_role() == "bed"]
     # Pieces of the same kind already in the room. The richer tiers add a
     # SECOND floor lamp and a second seat, and every rule in the engine is
     # satisfied by standing them side by side: the two lamps came out 45 cm
@@ -469,6 +471,22 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
                 ax, ay, *_ = sofas[0].footprint()
                 return (spread, not back_to_wall, abs(x - ax) + abs(y - ay))
             return (spread, not back_to_wall, -front, x + y)
+        if role in BEDSIDE_ROLES and beds:
+            # A bedside table has to end up within arm's reach of the pillow,
+            # and the generic wall-hugging order never got near it: every
+            # position it tried failed the reach rule, so the slot came back
+            # unfilled with "could not be placed anywhere in the room". Rank
+            # by distance to the bed, the way the coffee table already is.
+            bx0, by0, bx1, by1 = beds[0].footprint()
+            # Distance from the bed, with overlap ranked LAST rather than
+            # first. Scoring plain separation made a position inside the
+            # mattress score zero — the best possible — so the search spent
+            # its whole position budget on spots that overlap the bed and the
+            # slot came back "could not be placed anywhere in the room".
+            inside = not (x + w <= bx0 or x >= bx1 or y + d <= by0 or y >= by1)
+            near = (max(bx0 - (x + w), x - bx1, 0.0)
+                    + max(by0 - (y + d), y - by1, 0.0))
+            return (spread, 1 if inside else 0, near, x + y)
         if role == "coffee_table" and anchors:
             # As close to the seating as the rules permit.
             ax, ay, *_ = anchors[0].footprint()
