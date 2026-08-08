@@ -189,7 +189,7 @@ def test_static_bundle_keys_match_what_the_frontend_computes():
 
     js = Path("app/static/studio.js").read_text(encoding="utf-8")
     # frontend: `${u}|${r}|${(s ?? []).join(',')}` then `${ctx}|${slot}|${asin}`
-    assert "const key = (u, r, s) => `${u}|${r}|${(s ?? []).join(',')}`" in js
+    assert "const planKey = (u, r, s) => `${u}|${r}|${(s ?? []).join(',')}`" in js
     assert re.search(r"BUNDLE\.swaps\[`\$\{ctx\}\|\$\{[a-z]+\.slot_id\}\|\$\{[a-z]+\.asin\}`\]", js)
 
     exporter = Path("tools/export_static.py").read_text(encoding="utf-8")

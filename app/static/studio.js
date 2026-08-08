@@ -45,12 +45,12 @@ controls.dampingFactor = 0.08;
 controls.maxPolarAngle = Math.PI / 2 - 0.02;   // never go under the floor
 
 scene.add(new THREE.HemisphereLight(0xdfe8f5, 0x1a1f26, 1.5));
-const key = new THREE.DirectionalLight(0xffffff, 1.5);
-key.position.set(6, 11, 5);
-key.castShadow = true;
-key.shadow.mapSize.set(2048, 2048);
-Object.assign(key.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12, far: 40 });
-scene.add(key);
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.5);
+keyLight.position.set(6, 11, 5);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+Object.assign(keyLight.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12, far: 40 });
+scene.add(keyLight);
 
 const world = new THREE.Group();
 scene.add(world);
@@ -325,7 +325,7 @@ async function applySwap(slotId, pick) {
  */
 const BUNDLE = window.__STATIC_BUNDLE ?? null;
 const STATIC = !!BUNDLE;
-const key = (u, r, s) => `${u}|${r}|${(s ?? []).join(',')}`;
+const planKey = (u, r, s) => `${u}|${r}|${(s ?? []).join(',')}`;
 
 async function api(path, body) {
   if (STATIC) return staticApi(path, body);
@@ -343,14 +343,14 @@ function staticApi(path, body) {
     return BUNDLE.candidates[cat] ?? { category: cat, count: 0, items: [] };
   }
   if (path === '/plan/auto') {
-    const plan = BUNDLE.plans[key(body.unit, body.room, body.style)];
+    const plan = BUNDLE.plans[planKey(body.unit, body.room, body.style)];
     if (!plan) throw new Error(`This build has no precomputed plan for ${body.room}.`);
     return structuredClone(plan);
   }
   if (path === '/plan/swap') {
     // Look up by full context. A verdict is a property of the arrangement, not
     // of the item on its own.
-    const ctx = key(body.unit, body.room, state.style);
+    const ctx = planKey(body.unit, body.room, state.style);
     const swapped = body.placements.find((p) => BUNDLE.swaps[`${ctx}|${p.slot_id}|${p.asin}`]);
     const hit = swapped && BUNDLE.swaps[`${ctx}|${swapped.slot_id}|${swapped.asin}`];
     if (!hit) {

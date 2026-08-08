@@ -42,6 +42,12 @@ jobs:
           PYTHONPATH=. uv run python ingest/build_catalog.py
 
       # Never publish a site built from an engine that is failing its own tests.
+      # A module that does not parse simply never runs, and the page fails
+      # silently — no console error reaches any test that reads the file as text.
+      # A duplicate top-level `const key` shipped exactly that way once.
+      - name: Parse the studio JavaScript
+        run: node --input-type=module --check < app/static/studio.js
+
       - name: Gate on the engine
         run: |
           uv run pytest -q
