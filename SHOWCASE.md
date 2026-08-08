@@ -353,6 +353,64 @@ system can state, about a specific corner, in centimetres. That is the whole
 thesis in one rejection: the failure is not in the room, it is on the way to
 the room, and no product listing on any marketplace would have told you.
 
+### Why the premium tier still buys a cheap room — the real answer
+
+The first explanation was "the catalogue has nothing in the middle". That was
+true and it was fixed: searching Amazon's **price band** directly, rather than
+by keyword, surfaced inventory relevance ranking had buried. Items priced
+3,000-8,000 SAR went from 7 to 48; 8,000-15,000 went from 5 to 25; categories
+with nothing in either band fell from eleven to three. The catalogue is 465
+listings.
+
+The tiers still return the same room. But the reason is now a different one,
+and it is the whole point of the project.
+
+Take `B0CC2PLFGN` — a VanAcc L-shaped sofa bed, 3,824 SAR, **800 reviews**,
+4.2 stars, dimensions stated, tagged `warm`, zero flags. It clears every gate
+the debate installed. Target-seeking ranks it **first**, ahead of the 1,883 SAR
+sofa the standard tier picks. Then:
+
+```
+stage: delivery
+why:   lift car doors (door 85x210cm): item 150x213x99cm cannot pass in
+       any orientation.
+```
+
+And the bedroom's premium candidate, the ZINUS bed with 1,313 reviews:
+
+```
+stage: delivery
+why:   turn into flat (turn 150cm into 90cm): item needs to swing 203cm of
+       length around the corner but only 171cm is available at 79cm thick.
+```
+
+Both upgrades are affordable. Both are well reviewed. Both have published
+dimensions. **Both fit their rooms.** Neither can be carried into the building.
+
+It is not a coincidence. Across unflagged, usable, priced listings:
+
+| | items | fail delivery |
+|---|---|---|
+| under 3,000 SAR | 132 | 22 (17%) |
+| 3,000 SAR and up | 14 | 5 (36%) |
+
+Small sample at the top — five of fourteen — so this is directional, not a
+statistic. But the mechanism is not in doubt: dearer furniture is bigger
+furniture, and the lift door is 85 cm wide no matter what you spend.
+
+**So the premium tier is constrained by the building, not by the budget or the
+assortment.** That is a sentence no marketplace can produce, because it depends
+on the customer's own lift and corridor — and it is exactly the claim eazli
+sells vendors on, *"27-43% reduction in returns driven by better fit"*. Their
+own AI-agent terms disclaim this: liability is waived if an item cannot be
+*"delivered, moved in, installed"* through *"doorways, hallways, stairs, and
+elevators"*. This system checks it, refuses the sofa, and says which door.
+
+The honest product answer is therefore not to spend more. It is to report the
+ceiling and its cause — which is what `unspent_budget` does, counting rejected
+candidates by reason: no published dimensions, implausible price, wrong
+category, **could not be delivered**.
+
 ### What shipped
 
 Neither position won outright, which is the point:

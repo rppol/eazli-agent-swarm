@@ -771,6 +771,14 @@ def parse_item(raw: dict) -> Product:
     material, material_source = _material(title, attrs)
     flags = flags + dim_flags + colour_flags + _plausibility_flags(category, dims)
 
+    # An item with no published dimensions is unusable, but until now it said
+    # so only through `dims_confidence`. The candidates list renders a blocked
+    # row from `flags`, so five portable wardrobes appeared greyed out with no
+    # stated reason — refusing something without saying why is the one thing
+    # this project is not allowed to do.
+    if confidence == "missing" and "no_published_dimensions" not in flags:
+        flags = flags + ["no_published_dimensions"]
+
     assembly = str(attrs.get("Required Assembly", "")).strip().lower()
 
     return Product(
