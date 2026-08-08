@@ -1,4 +1,4 @@
-.PHONY: setup index serve test evals check demo viz clean
+.PHONY: setup index serve studio test evals check demo viz site clean
 
 setup:
 	uv sync
@@ -30,9 +30,17 @@ demo:
 	@uv run python cli.py access unit01 bedroom 90 90 105 | python3 -c "import json,sys;d=json.load(sys.stdin);print('   assembled:',d['status'])"
 	@uv run python cli.py access unit01 bedroom 90 90 105 --carton 95 88 40 | python3 -c "import json,sys;d=json.load(sys.stdin);print('   carton   :',d['status'])"
 
+studio:
+	@echo "open http://localhost:8000/studio"
+	uv run uvicorn app.main:app --port 8000
+
+site:
+	PYTHONPATH=. uv run python tools/export_static.py
+	@echo "static build in site/ — serve with: python3 -m http.server -d site 8080"
+
 viz:
 	PYTHONPATH=. uv run python viz/render.py
 
 clean:
-	rm -rf data/chroma .pytest_cache
+	rm -rf data/chroma .pytest_cache site
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +

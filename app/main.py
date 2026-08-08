@@ -11,10 +11,16 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import store
+from app.catalog import parse_capture
+from app.planner import auto_plan, swap
 from app.geometry import (
     Dims,
     Placement,
@@ -38,6 +44,9 @@ PLANS = {
     "explorer": {"rooms": 1, "layouts": 5, "redesigns": 10},
     "active": {"rooms": 99, "layouts": 15, "redesigns": 20},
 }
+
+STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # --------------------------------------------------------------------------
@@ -333,6 +342,77 @@ def plan_quota(req: QuotaRequest) -> dict:
         "redesigns_allowed": redesigns_ok,
         "message": " ".join(messages) or "Within plan limits.",
     }
+
+
+# --------------------------------------------------------------------------
+# studio — the 3D simulator
+# --------------------------------------------------------------------------
+
+class PlanRequest(BaseModel):
+    unit: str = "unit01"
+    room: str = "living_dining"
+    budget_sar: float = 8000
+    style: list[str] = Field(default_factory=lambda: ["warm", "minimal"])
+
+
+class SwapRequest(BaseModel):
+    unit: str
+    room: str
+    placements: list[dict]
+
+
+@app.post("/plan/auto", tags=["studio"])
+def plan_auto(req: PlanRequest) -> dict:
+    """Furnish a room by search. Deterministic — no model involved.
+
+    Every arrangement it returns has already been through `validate_layout`,
+    so the studio never renders a layout the engine has not accepted.
+    """
+    return auto_plan(req.unit, req.room, req.budget_sar, req.style).to_dict()
+
+
+@app.post("/plan/swap", tags=["studio"])
+def plan_swap(req: SwapRequest) -> dict:
+    """Re-validate an arrangement the user edited in the browser.
+
+    Nothing the frontend says about fit is trusted; it sends coordinates and
+    this returns the verdict.
+    """
+    return swap(req.unit, req.room, req.placements)
+
+
+@app.get("/plan/candidates/{category}", tags=["studio"])
+def plan_candidates(category: str, max_price_sar: float = 100000) -> dict:
+    """Everything in the catalogue that could fill a slot, swappable or not.
+
+    Unusable items are included and flagged rather than hidden — the studio
+    shows them greyed out with the reason, because "why can't I pick that one"
+    is the question a customer actually asks.
+    """
+    items = [
+        {
+            "asin": p.asin, "title": p.title, "url": p.url,
+            "price_sar": p.price_sar, "rating": p.rating, "reviews": p.reviews,
+            "dims_cm": {"w": p.dims.w, "d": p.dims.d, "h": p.dims.h},
+            "dims_confidence": p.dims_confidence,
+            "style": p.style_tags, "flags": p.flags,
+            "usable": p.usable, "flat_pack": p.flat_pack,
+        }
+        for p in parse_capture()
+        if p.category == category
+    ]
+    items.sort(key=lambda i: (not i["usable"], i["price_sar"] or 1e9))
+    return {"category": category, "count": len(items), "items": items}
+
+
+@app.get("/studio", include_in_schema=False)
+def studio() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse("/studio")
 
 
 @app.get("/health", tags=["meta"])

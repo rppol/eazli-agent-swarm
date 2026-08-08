@@ -12,3 +12,6 @@ data/chroma/
 # Local scratch
 *.log
 .DS_Store
+
+# Static export — rebuilt by `make site`, published to Pages by CI
+site/

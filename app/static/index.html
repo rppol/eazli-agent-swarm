@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eazli studio — plan, swap, verify</title>
+<link rel="stylesheet" href="/static/studio.css">
+<script type="importmap">
+{ "imports": {
+    "three": "/static/vendor/three.module.js",
+    "three/addons/controls/OrbitControls.js": "/static/vendor/OrbitControls.js"
+} }
+</script>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <strong>eazli studio</strong>
+    <span class="sub">plan a room, swap anything, every verdict from the Python engine</span>
+  </div>
+  <div class="controls">
+    <label>unit
+      <select id="unit"></select>
+    </label>
+    <label>room
+      <select id="room"></select>
+    </label>
+    <label>budget
+      <input id="budget" type="number" value="8000" step="500" min="500">
+      <span class="unit-tag">SAR</span>
+    </label>
+    <label>style
+      <select id="style">
+        <option value="warm,minimal">warm + minimal</option>
+        <option value="modern,luxury">modern + luxury</option>
+        <option value="industrial,mid_century">industrial + mid-century</option>
+        <option value="boho,scandi">boho + scandi</option>
+        <option value="">no preference</option>
+      </select>
+    </label>
+    <button id="run" class="primary">Run plan</button>
+  </div>
+</header>
+
+<main>
+  <section id="viewport">
+    <div id="canvas-host"></div>
+    <div id="hud">
+      <div id="verdict" class="verdict pending">ready</div>
+      <div id="money"></div>
+    </div>
+    <div id="viewtools">
+      <button data-view="iso" class="active">iso</button>
+      <button data-view="top">top</button>
+      <button data-view="eye">eye level</button>
+      <label class="toggle"><input type="checkbox" id="showGhosts" checked> unfilled slots</label>
+    </div>
+    <div id="loading" hidden><div class="spinner"></div><span>planning…</span></div>
+  </section>
+
+  <aside id="panel">
+    <div id="items"></div>
+    <div id="issues"></div>
+    <div class="foot">
+      <p><strong>Nothing here is decided in the browser.</strong> Every move posts the
+      arrangement to <code>/plan/swap</code>; the verdict comes back from
+      <code>app/geometry.py</code> — the same code the tests and the agents use.</p>
+    </div>
+  </aside>
+</main>
+
+<div id="picker" hidden>
+  <div class="picker-inner">
+    <div class="picker-head">
+      <h2 id="picker-title">Swap</h2>
+      <button id="picker-close" aria-label="close">×</button>
+    </div>
+    <div id="picker-list"></div>
+  </div>
+</div>
+
+<script type="module" src="/static/studio.js"></script>
+</body>
+</html>

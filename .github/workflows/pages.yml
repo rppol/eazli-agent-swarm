@@ -1,0 +1,59 @@
+name: pages
+
+# Builds the static studio and publishes it to GitHub Pages.
+#
+# The site is generated, never hand-written: `tools/export_static.py` runs the
+# real `app/geometry.py` and bakes its verdicts into a bundle. So a rule change
+# that would alter what the site claims cannot ship without the site changing
+# with it — the alternative, a JavaScript reimplementation of the rules, would
+# be a second unverified engine.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+
+      # The catalogue index is needed because the exporter reads real products.
+      - run: PYTHONPATH=. uv run python ingest/build_catalog.py
+
+      # Never publish a site built from an engine that is failing its own tests.
+      - name: Gate on the engine
+        run: |
+          uv run pytest -q
+          PYTHONPATH=. uv run python evals/run_evals.py
+
+      - run: PYTHONPATH=. uv run python tools/export_static.py
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
