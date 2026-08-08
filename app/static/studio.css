@@ -67,8 +67,9 @@ header {
 
 /* The monogram is the element and the photo is a layer over it. cdn.eazli.com
    is somebody else's host, so "the image never arrived" is a normal state —
-   and a broken <img alt=""> draws nothing at all, no icon and no alt text, so
-   the initial underneath is simply what you see. No script to go wrong. */
+   and a portrait that fails to load, carrying an empty alt because its name is
+   already in the text beside it, draws nothing at all: no icon, no alt string.
+   The initial underneath is simply what you then see. No script to go wrong. */
 .persona-av {
   position: relative; flex: none; width: 28px; height: 28px;
   display: grid; place-items: center; border-radius: 50%;
