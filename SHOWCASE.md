@@ -646,7 +646,7 @@ rejected for a hallway it would sail through, a rigid sofa waved through a door
 it cannot clear.
 
 **It refuses to answer.** `dims_confidence` travels with every number
-(`stated` / `parsed` / `conflicted` / `missing`). Of 75 real listings only 57
+(`stated` / `parsed` / `conflicted` / `missing`). Of 465 real listings only 211
 are usable for a confirmed fit claim. The other 18 stay in the index so an agent
 can find and dismiss them:
 
@@ -671,7 +671,7 @@ Item Dimensions:           79.4 x 36 x 175.5  ┘ 40cm apart
 | **Research** | 55 FAQ answers extracted (they lazy-render — `curl` returns exactly one), plus the AI Agent Disclaimers policy that defines every agent's limits |
 | **Geometry first** | `check_fit`, `validate_layout`, `check_access_path` written test-first, before any agent existed |
 | **Floor plan** | A real whole-floor plate, cropped per unit and transcribed; the `1.50M WIDE PASSAGE`, the `2'11"` internal passage and the `LIFT 7'2" x 6'10"` annotations are what make the access check real |
-| **Catalogue** | 75 amazon.sa listings pulled through a real browser session, kept verbatim so the parser is testable without re-scraping |
+| **Catalogue** | 465 amazon.sa listings over four passes — browser session, then server-side, then price-band filtered to reach inventory keyword search buried. Kept verbatim so the parser is testable without re-scraping |
 | **Agents** | Seven, each with a *negative* scope taken from eazli's published policy |
 | **Review** | An adversarial auditor, an LLM judge and a code review found **14 defects**; all fixed and regression-tested |
 

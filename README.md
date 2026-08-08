@@ -114,9 +114,15 @@ cloning. Until then the agents fall back to `cli.py`, which hits the same endpoi
 `missing`. An item with no published dimensions returns `unverified`, never `pass`.
 Refusing to answer is the feature; a confident wrong answer is what produces a return.
 
-Of 75 real listings, **57 are usable for a confirmed fit claim**. The other 18 are kept
-in the index so an agent can find and dismiss them, flagged as contradictory, physically
-impossible, the wrong category entirely, or publishing no dimensions at all. Real marketplace data looks like this:
+Of 465 real listings, **211 are usable for a confirmed fit claim**. The other 254 are
+kept in the index so an agent can find and dismiss them, each flagged with the reason:
+contradictory, physically impossible, implausibly priced, the wrong category entirely,
+or publishing no dimensions at all. Nothing is refused silently.
+
+The usable rate *fell* as the catalogue grew — 76% at 75 listings, 45% at 465. More
+choice really did mean more junk, which is why most of the parser is about refusing
+things. 154 listings publish no dimensions of any kind. Real marketplace data looks like
+this:
 
 ```
 1.05D x 2.2W x 0.83H Meters     ← metres
