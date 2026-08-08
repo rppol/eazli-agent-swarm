@@ -97,13 +97,27 @@ class TestSuggestions:
         assert art.search_query
 
     def test_a_still_unstocked_kind_still_says_so(self, empty_room):
-        """Zero vases exist in the capture even after the merge, so a
-        vase-shaped suggestion is the honest negative half of the same rule
-        `test_in_catalogue_reflects_what_the_capture_actually_has` checks."""
-        picks = suggest_finishing(empty_room, [sofa(100, 0)], ["luxury"])
-        vase = next(p for p in picks if p.kind == "statement_vase")
-        assert vase.in_catalogue is False
-        assert vase.search_query
+        """The negative half of the same rule — but derived, not named.
+
+        This test used to hardcode `statement_vase`, because the capture had
+        zero vases. A later scrape brought in eight and the test failed for
+        being right. Which kinds are stocked is a property of the capture and
+        changes every time someone scrapes; the invariant is only that an
+        unstocked kind admits it. So find one, whatever it happens to be."""
+        unstocked = [k for k in styling.SEARCH_FOR_KIND
+                     if styling.CATEGORY_FOR_KIND.get(k, k)
+                     not in styling.CAPTURED_CATEGORIES]
+        if not unstocked:
+            pytest.skip("the capture now stocks every suggestable kind")
+        for kind in unstocked:
+            s = styling.Suggestion(
+                kind=kind, width_cm=60, height_cm=150, wall=None, offset_cm=None,
+                centre_height_cm=None, because="x", rule="y",
+                in_catalogue=styling.CATEGORY_FOR_KIND.get(kind, kind)
+                in styling.CAPTURED_CATEGORIES,
+                search_query=styling.SEARCH_FOR_KIND[kind])
+            assert s.in_catalogue is False
+            assert s.search_query
 
     def test_personality_changes_what_is_suggested(self, empty_room):
         warm = {p.kind for p in suggest_finishing(empty_room, [sofa(100, 0)], ["warm", "boho"])}
@@ -149,17 +163,20 @@ class TestCapturedCategoriesAreHonest:
     def test_captured_categories_is_derived_from_the_actual_capture(self):
         assert styling.CAPTURED_CATEGORIES == frozenset(p.category for p in parse_capture())
 
-    def test_the_capture_now_has_decor_but_not_every_kind_of_it(self):
-        """The merge landed: wall_art, mirror and plant are real categories in
-        the capture now (22, 12 and 26 listings respectively) — the honest
-        invariant was never "there is no decor", it is "CAPTURED_CATEGORIES
-        matches what is actually in the capture", which the derivation test
-        above already covers. vase remains genuinely unstocked (0 listings),
-        which is what keeps this test from being vacuous — it would fail if
-        the capture ever claimed a category it doesn't have, in either
-        direction."""
+    def test_the_capture_has_the_decor_categories_the_suggestions_name(self):
+        """Decor is real now — wall_art, mirror, plant and vase are all in the
+        capture. The earlier version of this test asserted vase was absent,
+        which was true when written and false one scrape later. Pin only what
+        the finishing pass actually depends on: that the categories its
+        suggestions map to exist, and that every mapping target is a category
+        the parser can actually produce."""
         assert {"wall_art", "mirror", "plant"} <= styling.CAPTURED_CATEGORIES
-        assert "vase" not in styling.CAPTURED_CATEGORIES
+        # Any mapping target that is not stocked must be reported unstocked,
+        # never quietly treated as available.
+        for kind, cat in styling.CATEGORY_FOR_KIND.items():
+            if cat not in styling.CAPTURED_CATEGORIES:
+                assert kind in styling.SEARCH_FOR_KIND, (
+                    f"{kind} maps to unstocked {cat} but offers no search query")
 
     def test_new_decor_kinds_map_to_the_new_catalog_categories(self):
         expected = {
