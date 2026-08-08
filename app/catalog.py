@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from app.geometry import Dims
@@ -358,6 +359,14 @@ def parse_item(raw: dict) -> Product:
     )
 
 
-def parse_capture(path: str = "catalog/raw/amazon-sa-capture.json") -> list[Product]:
+@lru_cache(maxsize=4)
+def parse_capture(path: str = "catalog/raw/amazon-sa-capture.json") -> tuple[Product, ...]:
+    """Parse the capture once per process.
+
+    Every plan and every candidates request called this, re-reading and
+    re-parsing 75 listings each time — enough to make the swap picker sit on
+    "loading" for over a second. Returns a tuple so the cached value cannot be
+    mutated by a caller.
+    """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    return [parse_item(entry) for entry in raw["items"]]
+    return tuple(parse_item(entry) for entry in raw["items"])

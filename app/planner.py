@@ -62,6 +62,22 @@ GRID_CM = 15
 
 
 @dataclass
+class Decision:
+    """Why this product, at this spot, and what lost.
+
+    A plan that cannot explain itself is indistinguishable from a plan that was
+    guessed. Every field here is recorded as the search runs, not reconstructed
+    afterwards — a rationale written after the fact is a caption.
+    """
+    considered: int
+    ranked_above: list[dict]
+    rejected: list[dict]
+    positions_tried: int
+    chose_because: str
+    placed_because: str
+
+
+@dataclass
 class PlacedItem:
     slot_id: str
     role: str
@@ -76,6 +92,7 @@ class PlacedItem:
     facing: str
     access: dict
     flat_pack: bool
+    decision: Decision
 
 
 @dataclass
@@ -84,6 +101,7 @@ class UnfilledSlot:
     role: str
     reason: str
     candidates_considered: int
+    rejected: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -213,7 +231,17 @@ def auto_plan(
 
     plan = Plan(
         unit=unit, room=room_name, budget_sar=budget_sar,
-        room_cm={"width": room.width_cm, "depth": room.depth_cm, "height": room.height_cm},
+        room_cm={
+            "width": room.width_cm, "depth": room.depth_cm, "height": room.height_cm,
+            # The door travels with the room so the studio can draw the real one
+            # rather than assume a width. Its position is a convention (see
+            # Home.assumptions), which is exactly why it must not be invented
+            # a second time in the browser.
+            "doors": [
+                {"wall": d.wall, "offset_cm": d.offset_cm, "width_cm": d.width_cm}
+                for d in room.doors
+            ],
+        },
     )
     route = home.route_to(unit, room_name)
     placed: list[Placement] = []
@@ -222,6 +250,8 @@ def auto_plan(
         budget_left = budget_sar - plan.total_sar
         pool = candidates_for(slot, catalog, budget_left, style)
         chosen = None
+        rejected: list[dict] = []
+        positions_tried_total = 0
 
         for product in pool:
             # Deliverability is a property of the product, not the position, so
@@ -229,6 +259,16 @@ def auto_plan(
             carton = product.carton or product.dims
             access = check_access_path(carton, route)
             if access.status == "fail":
+                blocker = next(
+                    (r for r in access.reasons
+                     if "cannot pass" in r or "does not fit" in r or "needs to swing" in r),
+                    "cannot reach this room",
+                )
+                rejected.append({
+                    "asin": product.asin, "title": product.title,
+                    "price_sar": product.price_sar, "stage": "delivery",
+                    "why": blocker,
+                })
                 continue
 
             tried = 0
@@ -240,14 +280,32 @@ def auto_plan(
                     product.asin, product.dims, x=x, y=y,
                     facing=facing, role=slot["role"],
                 )
-                if validate_layout(room, placed + [trial]).status == "pass":
-                    chosen = (product, trial, access)
+                verdict = validate_layout(room, placed + [trial])
+                if verdict.status == "pass":
+                    chosen = (product, trial, access, tried)
                     break
+                last_reason = verdict.reasons[0] if verdict.reasons else "no valid position"
+            positions_tried_total += tried
             if chosen:
                 break
+            rejected.append({
+                "asin": product.asin, "title": product.title,
+                "price_sar": product.price_sar, "stage": "placement",
+                "why": last_reason,
+            })
 
         if chosen:
-            product, trial, access = chosen
+            product, trial, access, tried = chosen
+            matched = sorted(set(product.style_tags) & set(style or []))
+            chose_because = (
+                f"matched {' + '.join(matched)}" if matched
+                else (f"best evidence available ({product.rating}\u2605, {product.reviews} reviews)"
+                      if product.rating else "cheapest that fits; no style tag or rating to go on")
+            )
+            placed_because = (
+                f"first of {tried} positions tried that passed every rule "
+                f"with the {len(placed)} item(s) already in the room"
+            )
             placed.append(trial)
             plan.total_sar += product.price_sar or 0
             plan.placed.append(PlacedItem(
@@ -260,6 +318,17 @@ def auto_plan(
                 access={"status": access.status, "reasons": access.reasons,
                         "measured_using": "carton" if product.carton else "assembled"},
                 flat_pack=product.flat_pack,
+                decision=Decision(
+                    considered=len(pool),
+                    ranked_above=[
+                        {"asin": p.asin, "title": p.title, "price_sar": p.price_sar}
+                        for p in pool[:4] if p.asin != product.asin
+                    ],
+                    rejected=rejected[:6],
+                    positions_tried=tried,
+                    chose_because=chose_because,
+                    placed_because=placed_because,
+                ),
             ))
         else:
             reason = (
@@ -271,6 +340,7 @@ def auto_plan(
             plan.unfilled.append(UnfilledSlot(
                 slot_id=slot["slot_id"], role=slot["role"],
                 reason=reason, candidates_considered=len(pool),
+                rejected=rejected[:8],
             ))
 
     final = validate_layout(room, placed)

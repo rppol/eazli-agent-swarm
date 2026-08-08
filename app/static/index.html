@@ -50,6 +50,7 @@
       <div id="verdict" class="verdict pending">ready</div>
       <div id="money"></div>
     </div>
+    <p id="verdict-why" hidden></p>
     <div id="viewtools">
       <button data-view="iso" class="active">iso</button>
       <button data-view="top">top</button>
@@ -60,8 +61,24 @@
   </section>
 
   <aside id="panel">
-    <div id="items"></div>
+    <details id="how">
+      <summary>How this plan was decided</summary>
+      <div id="how-body"></div>
+    </details>
+    <details id="legend">
+      <summary>What the labels mean</summary>
+      <dl>
+        <dt>stated</dt><dd>The listing gave dimensions with explicit axis labels. Most trustworthy.</dd>
+        <dt>parsed</dt><dd>Dimensions read from an unlabelled field. The numbers are usually right; which one is the depth is a guess.</dd>
+        <dt>conflicted</dt><dd>The listing contradicts itself across two fields. Not eligible to be placed.</dd>
+        <dt>missing</dt><dd>No published dimensions. Never reported as fitting.</dd>
+        <dt>needs tipping</dt><dd>It reaches the room only carried on its side, or stood on end at the corridor turn.</dd>
+        <dt>tight fit</dt><dd>Under 3&nbsp;cm to spare at some opening. Measure before ordering.</dd>
+        <dt>unverified</dt><dd>A rule could not be applied, so nothing is claimed. Not the same as a pass.</dd>
+      </dl>
+    </details>
     <div id="issues"></div>
+    <div id="items"></div>
     <div class="foot">
       <p><strong>Nothing here is decided in the browser.</strong> Every move posts the
       arrangement to <code>/plan/swap</code>; the verdict comes back from

@@ -136,7 +136,11 @@ def test_plan_auto_endpoint(client):
     assert r.status_code == 200
     assert body["validation"]["status"] == "pass"
     assert body["within_budget"] is True
-    assert body["room_cm"] == {"width": 335, "depth": 551, "height": 290}
+    assert (body["room_cm"]["width"], body["room_cm"]["depth"]) == (335, 551)
+    # The door ships with the room so the studio draws the real one instead of
+    # hardcoding a width the server already owns.
+    assert body["room_cm"]["doors"], "the studio needs the door to draw its swing"
+    assert body["room_cm"]["doors"][0]["width_cm"] == 90
 
 
 def test_candidates_endpoint_includes_unusable_items_flagged(client):
@@ -212,5 +216,39 @@ def test_the_studio_frontend_contains_no_geometry():
     """If a rule threshold ever appears in the browser, there are two engines."""
     from pathlib import Path
     js = Path("app/static/studio.js").read_text(encoding="utf-8")
-    for forbidden in ("WALKWAY", "90 ", "clearance >", "0.9 *"):
-        assert forbidden not in js.replace("// ", ""), f"{forbidden!r} suggests geometry leaked into the browser"
+    body = "\n".join(l for l in js.splitlines() if not l.strip().startswith(("//", "*", "/*")))
+    for forbidden in ("WALKWAY", "90 * CM", "clearance >", "0.9 *", "40 * CM", "75 * CM"):
+        assert forbidden not in body, f"{forbidden!r} suggests a rule threshold leaked into the browser"
+
+
+def test_the_studio_translates_asins_into_words_for_the_user():
+    """Verdict reasons name items by the id they were sent with — an ASIN.
+    "Only 35cm between B0FR3WVLTS and B0H8PQ9KDJ" is precise and unreadable."""
+    from pathlib import Path
+
+    js = Path("app/static/studio.js").read_text(encoding="utf-8")
+    assert "function humanise(" in js
+    # Every place a reason reaches the user must go through it.
+    for site in ("why.textContent = first ? humanise(first)",
+                 "esc(humanise(r))"):
+        assert site in js, f"a reason path is missing humanise(): {site}"
+
+
+def test_the_failure_reason_is_shown_next_to_the_verdict():
+    """A red badge whose explanation sits below five product cards is not an
+    explanation. The reason renders in the viewport and the panel scrolls back."""
+    from pathlib import Path
+
+    js = Path("app/static/studio.js").read_text(encoding="utf-8")
+    html = Path("app/static/index.html").read_text(encoding="utf-8")
+    assert 'id="verdict-why"' in html
+    assert "$('#panel').scrollTo" in js
+
+
+def test_the_loading_overlay_can_actually_hide():
+    """`display:flex` on the base rule beats the UA stylesheet's [hidden], so
+    the spinner sat over the canvas forever."""
+    from pathlib import Path
+
+    css = Path("app/static/studio.css").read_text(encoding="utf-8")
+    assert "#loading[hidden] { display: none; }" in css

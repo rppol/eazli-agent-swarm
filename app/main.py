@@ -46,7 +46,28 @@ PLANS = {
 }
 
 STATIC_DIR = Path(__file__).parent / "static"
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+class RevalidatingStatic(StaticFiles):
+    """Serve the studio assets with `no-cache`.
+
+    Not "don't cache" — `no-cache` means "revalidate before reuse", so the
+    ETag still saves the transfer when nothing changed. Without it the browser
+    heuristically cached studio.js and kept running a build from several edits
+    ago, which looks exactly like a fix that did not work.
+    """
+
+    def is_not_modified(self, response_headers, request_headers) -> bool:
+        response_headers["cache-control"] = "no-cache"
+        return super().is_not_modified(response_headers, request_headers)
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["cache-control"] = "no-cache"
+        return response
+
+
+app.mount("/static", RevalidatingStatic(directory=STATIC_DIR), name="static")
 
 
 # --------------------------------------------------------------------------
