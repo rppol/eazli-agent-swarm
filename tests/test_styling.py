@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import pytest
 
+from app import styling
+from app.catalog import parse_capture
 from app.geometry import Dims, Door, Placement, Room
 from app.styling import free_floor_pockets, free_wall_runs, suggest_finishing
 
@@ -83,11 +85,25 @@ class TestSuggestions:
         assert art.centre_height_cm == 145
         assert "sofa" in art.because
 
-    def test_it_never_claims_the_catalogue_has_something_it_does_not(self, empty_room):
+    def test_in_catalogue_reflects_what_the_capture_actually_has(self, empty_room):
+        """The merged capture now has real wall_art (22), mirror (12) and
+        plant (26) listings — a suggestion in one of those categories has to
+        say `in_catalogue: true`, not false out of habit. `search_query` is
+        carried regardless, since even a sourceable kind is a suggestion, not
+        a specific product pick."""
         picks = suggest_finishing(empty_room, [sofa(100, 0)], ["warm", "minimal"])
         art = next(p for p in picks if p.kind == "wall_art")
-        assert art.in_catalogue is False
+        assert art.in_catalogue is True
         assert art.search_query
+
+    def test_a_still_unstocked_kind_still_says_so(self, empty_room):
+        """Zero vases exist in the capture even after the merge, so a
+        vase-shaped suggestion is the honest negative half of the same rule
+        `test_in_catalogue_reflects_what_the_capture_actually_has` checks."""
+        picks = suggest_finishing(empty_room, [sofa(100, 0)], ["luxury"])
+        vase = next(p for p in picks if p.kind == "statement_vase")
+        assert vase.in_catalogue is False
+        assert vase.search_query
 
     def test_personality_changes_what_is_suggested(self, empty_room):
         warm = {p.kind for p in suggest_finishing(empty_room, [sofa(100, 0)], ["warm", "boho"])}
@@ -123,3 +139,47 @@ class TestSuggestions:
         for p in suggest_finishing(empty_room, [sofa(100, 0)], ["warm", "minimal"]):
             assert p.because
             assert p.rule
+
+
+class TestCapturedCategoriesAreHonest:
+    """CAPTURED_CATEGORIES exists so `in_catalogue` cannot lie. A hand-written
+    list drifts the moment the catalog gains or loses a category — this
+    checks it against the thing it claims to describe, not against itself."""
+
+    def test_captured_categories_is_derived_from_the_actual_capture(self):
+        assert styling.CAPTURED_CATEGORIES == frozenset(p.category for p in parse_capture())
+
+    def test_the_capture_now_has_decor_but_not_every_kind_of_it(self):
+        """The merge landed: wall_art, mirror and plant are real categories in
+        the capture now (22, 12 and 26 listings respectively) — the honest
+        invariant was never "there is no decor", it is "CAPTURED_CATEGORIES
+        matches what is actually in the capture", which the derivation test
+        above already covers. vase remains genuinely unstocked (0 listings),
+        which is what keeps this test from being vacuous — it would fail if
+        the capture ever claimed a category it doesn't have, in either
+        direction."""
+        assert {"wall_art", "mirror", "plant"} <= styling.CAPTURED_CATEGORIES
+        assert "vase" not in styling.CAPTURED_CATEGORIES
+
+    def test_new_decor_kinds_map_to_the_new_catalog_categories(self):
+        expected = {
+            "wall_art": "wall_art",
+            "gallery_pair": "wall_art",
+            "textile_wall_hanging": "wall_art",
+            "wall_mirror": "mirror",
+            "large_plant": "plant",
+            "sculptural_plant": "plant",
+            "statement_vase": "vase",
+            "floor_basket": "vase",
+            "arc_floor_lamp": "floor_lamp",
+        }
+        for kind, category in expected.items():
+            assert styling.CATEGORY_FOR_KIND.get(kind) == category, kind
+
+    def test_a_suggestion_reports_in_catalogue_honestly_for_a_kind_the_capture_lacks(self, empty_room):
+        picks = suggest_finishing(empty_room, [sofa(100, 0)], ["warm", "boho"])
+        # Whatever kinds this personality produced, none can claim
+        # in_catalogue=True for a category the real capture does not have.
+        for p in picks:
+            category = styling.CATEGORY_FOR_KIND.get(p.kind, p.kind)
+            assert p.in_catalogue == (category in styling.CAPTURED_CATEGORIES)

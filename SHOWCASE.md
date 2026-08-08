@@ -209,6 +209,172 @@ can furnish a room but cannot finish one will lose the second half of the basket
 "~19% higher AOV through smart bundles" is on eazli's own vendor page. The system can
 only say so because it refused to invent the painting.
 
+
+---
+
+## The debate: should a bigger budget buy a better room?
+
+Four budget tiers were added — 3,000 / 8,000 / 15,000 / 30,000 SAR. They did
+almost nothing: `standard`, `comfort` and `premium` returned **byte-identical
+plans**, so a 30,000 SAR brief produced a 3,734 SAR room. Rather than guess at
+the fix, two agents with opposing incentives were asked to argue it, each told
+to ground every claim in the 280-listing catalogue and to answer the other's
+strongest point rather than the weakest.
+
+### Adam: the ceiling is a bug wearing a feature's clothes
+
+He located it in one line of `_score`:
+
+```python
+return (-matched, -evidence, product.price_sar, product.asin)
+#                            ^^^^^^^^^^^^^^^^^ ascending, unsigned
+```
+
+Price appears exactly once, ascending. **No input to that tuple can ever prefer
+a costlier item.** A larger budget only un-blocks candidates that were
+unaffordable; it never causes an upgrade over something already reachable. That
+is why `starter` differs — money is the binding constraint at 3,000 — and why
+nothing above it does.
+
+He proposed per-slot target-seeking (`abs(price - slot_target)` in place of
+`price`), with headroom allocated by weight, sofa first: it is recipe priority
+1, carries ~50% of the room's spend, and has the only real quality ladder in
+the catalogue — linen → bouclé → velvet → air-leather, within one product line.
+Not five markups of the same sofa.
+
+### The auditor: that is how this system starts lying
+
+It measured the thing that actually decides the question — whether evidence
+survives at the top of the price range.
+
+| band (SAR) | items | usable | no dimensions | avg reviews |
+|---|---|---|---|---|
+| 0 – 500 | 171 | 80 | 23 | 479.0 |
+| 500 – 2,000 | 48 | 35 | 2 | 26.2 |
+| 2,000 – 8,000 | 12 | 4 | 3 | 5.5 |
+| 8,000 – 30,000 | 15 | 6 | 8 | 231.9 |
+| 30,000+ | 23 | **1** | **19** | **0.0** |
+
+Every listing above 30,000 SAR has zero reviews. Spearman ρ(price, reviews)
+across the usable pool is **−0.33**. Growing the catalogue from 75 to 280 items
+dropped usability from 76% to 45%, and the dilution is concentrated exactly
+where budget headroom would send the planner.
+
+It also found the string that would become a lie: `chose_because` hardcodes
+`"cheapest that fits; no style tag or rating to go on"`, which is true only
+while price sorts ascending. Flip the sort and the plan prints *cheapest that
+fits* over the most expensive unrated item in the pool.
+
+### What makes this worth showing: they converged on the same defect
+
+Working independently, from opposite positions, both surfaced `B0DV7MZK5D` — a
+39,264 SAR *"Transformer Table Solid Wood Extendable Round Dining Table Set"*
+parsed as **7.6 cm tall**, `dims_confidence: stated`, **zero flags**,
+`usable: True`.
+
+The listing's own attributes say `Tabletop Thickness: 3 Inches`. The parser had
+read the tabletop as the table. `_plausibility_flags` range-checks only the
+single largest extent, so a mislabelled axis passes every gate — and this item
+becomes the top `dining_table` pick the instant price counts for anything.
+
+Neither agent was looking for it. One found it hunting for upgrade candidates,
+the other hunting for reasons to refuse them.
+
+### Both conceded ground
+
+**The auditor**, asked for the strongest case against itself, produced one:
+`bed` is a genuine exception. `B08569KN5F` (ZINUS platform bed, 15,385 SAR,
+`stated`, 4.6★, **1,313 reviews**) is better documented than most of the cheap
+end of its own category. A blanket "price is never evidence" rule refuses it
+wrongly. It then named its own weakness unprompted — its guardrail *"fixes the
+lying, not the disappointment"*.
+
+**Adam** conceded the ceiling: with every verified upgrade **plus** an added
+armchair, this room reaches 8,049 SAR. The catalogue cannot fill a verified
+30,000 SAR living/dining room. So `premium`'s promise is nearly honest for what
+is actually in stock — and **8,000 vs 15,000 is where the algorithm was really
+lying to the customer.**
+
+### The dispatcher overruled one of them on a fact
+
+The auditor argued the 185,350 SAR coffee table (`B0FG1849P3`) was a scraping
+artifact, its price lifted from Amazon's installment widget. Fetching the live
+page settled it: SAR 185,350.38 sits in the core price block. It is a real
+grey-market listing by a seller called `ZZZXCDSX`.
+
+The conclusion held — that item must never be recommended — but the mechanism
+was wrong, and the remedy changed with it, from a scraper patch to a
+price-plausibility flag. An agent being confidently wrong about *why* is the
+normal case; the value of the pattern is that the claim was checkable.
+
+### The bug the debate's own guardrail introduced
+
+Implementing the synthesis produced a second-order failure worth recording,
+because it is the exact shape of thing a demo normally ships without noticing.
+
+The price-plausibility flag — the auditor's own suggestion — flags anything far
+above its category's median. Applied to `bed`, whose median usable price is
+**332 SAR** (a market of cheap metal frames), it flagged `B08569KN5F`: a ZINUS
+Brock platform bed, 15,385 SAR, 4.6 stars, **1,313 reviews**, dimensions
+stated. Forty-six times the median, therefore "implausible".
+
+That is the *precise item* the auditor had named as its own counterexample, and
+the guardrail deleted it. A 30,000 SAR bedroom brief then bought a 329 SAR bed
+and reported the budget as unspendable — which was false. The catalogue had
+what the tier was meant to buy; the check had thrown it away.
+
+The fix is a one-line principle: **a median multiple is only ever a proxy for
+"nobody vouches for this price", and direct evidence beats a proxy.** Real
+buyers at that price override the heuristic. The 185,350 SAR coffee table stays
+flagged — it has zero reviews, which is the difference the flag was reaching
+for all along.
+
+Found by asking *why* the tier produced no upgrade rather than accepting that
+it produced none. The measurement said "no eligible items"; the mechanism said
+"one eligible item, discarded by our own new rule."
+
+### And then the engine refused it anyway
+
+With the flag corrected, ZINUS ranks **first** in the bedroom pool — best
+evidence in the category by two orders of magnitude. The planner tries it
+first, and rejects it:
+
+```
+stage: delivery
+why:   turn into flat (turn 150cm into 90cm): item needs to swing 203cm of
+       length around the corner but only 171cm is available at 79cm thick.
+```
+
+It is affordable. It is well reviewed. It has stated dimensions. **It fits the
+room.** It cannot be carried in.
+
+So the premium bedroom tier still buys a 329 SAR bed — but now for a reason the
+system can state, about a specific corner, in centimetres. That is the whole
+thesis in one rejection: the failure is not in the room, it is on the way to
+the room, and no product listing on any marketplace would have told you.
+
+### What shipped
+
+Neither position won outright, which is the point:
+
+1. **Per-axis plausibility first.** Height and footprint are sanity-checked per
+   category, not just the largest extent. A 7.6 cm dining table is flagged and
+   is no longer `usable`.
+2. **A price-plausibility flag**, by multiple of the category's median usable
+   price — the same *flag, don't silently trust* pattern the dimension checks
+   already use. Flagged items stay findable so an agent can dismiss them.
+3. **Target-seeking, gated.** Budget influences ranking only for items that
+   clear an evidence floor and carry no plausibility flag. Below it, price
+   remains a cheapest-first tiebreaker.
+4. **Narration that keeps up with scoring**, so no plan claims "cheapest that
+   fits" about something deliberately upgraded.
+5. **An honest ceiling.** When a budget cannot be spent, the plan reports how
+   much went out and how many candidates were refused, and why.
+
+The last one is the same move as `dims_confidence`, applied to money: the
+useful answer to *"why didn't you spend my 30,000 SAR?"* is a measurement, not
+a better-sounding plan.
+
 ---
 
 ## Where the agents disagreed

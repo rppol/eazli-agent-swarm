@@ -48,16 +48,12 @@ header {
   font-size: 11px; color: var(--muted); text-transform: lowercase;
 }
 
-select, input[type="number"] {
+select {
   background: var(--panel-2); color: var(--ink);
   border: 1px solid var(--line); border-radius: 7px;
   padding: 7px 9px; font: inherit; font-size: 13px; min-width: 116px;
 }
-select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-.unit-tag {
-  position: absolute; opacity: 0; /* the label already says SAR */
-}
+select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 button {
   background: var(--panel-2); color: var(--ink);

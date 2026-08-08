@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app.geometry import Dims, Placement, validate_layout
 from app.home import load_home
 from app.main import app
-from app.planner import RECIPES, auto_plan, candidates_for, swap
+from app.planner import BUDGET_TIERS, RECIPES, auto_plan, candidates_for, swap
 
 
 @pytest.fixture(scope="module")
@@ -98,6 +98,98 @@ def test_a_bedroom_gets_a_bed_not_a_sofa():
 
 
 # --------------------------------------------------------------------------
+# budget tiers — the studio's vocabulary, not the engine's
+# --------------------------------------------------------------------------
+
+def test_the_tiers_span_the_range_the_catalogue_can_actually_reach():
+    """A tier the exporter cannot tell apart from its neighbour is a fifth
+    dropdown entry that produces an identical plan. The four here are spaced
+    across the real price range, cheapest plan to dearest."""
+    ids = [t["id"] for t in BUDGET_TIERS]
+    assert ids == ["starter", "standard", "comfort", "premium"]
+    amounts = [t["sar"] for t in BUDGET_TIERS]
+    assert amounts == sorted(amounts), "the picker reads top to bottom"
+    assert all(t["label"] and t["note"] for t in BUDGET_TIERS), "a tier must say what it buys"
+
+
+def test_a_bigger_tier_never_returns_a_smaller_room():
+    """Budget is a ceiling first. Raising it can only widen the candidate pool,
+    so it must never cost a slot that a tighter tier managed to fill.
+
+    Budget is now also a per-slot target (see `planner.SLOT_HEADROOM_WEIGHTS`),
+    but a target may only pull the pick upwards when the dearer item clears an
+    evidence floor, and this catalogue almost never offers one: within the
+    style-matched tier of a "warm + minimal" brief, no living/dining slot has
+    two floor-clearing candidates at different prices except the TV unit, where
+    the whole available upgrade is 9.67 SAR.
+
+    So what this does NOT assert stands: that every step up changes something.
+    Above the starter tier it does not — standard, comfort and premium all
+    return the same room, 3,750.61 of 30,000 spent, and `unspent_budget` says
+    why with counts. Asserting a difference here would be asserting a wish."""
+    plans = [
+        auto_plan("unit01", "living_dining", t["sar"], ["warm", "minimal"])
+        for t in BUDGET_TIERS
+    ]
+    for lower, higher in zip(plans, plans[1:]):
+        assert len(higher.placed) >= len(lower.placed)
+        assert higher.total_sar <= higher.budget_sar
+    # The cheapest tier is a real constraint, not a relabelling of the default.
+    assert len(plans[0].placed) < len(plans[1].placed)
+
+
+def test_the_api_still_takes_any_budget_a_caller_asks_for(client):
+    """The tiers are what the dropdown offers. An agent or a CLI call is not
+    holding a dropdown, and constraining the endpoint to four amounts would
+    narrow the engine to fit a UI affordance."""
+    r = client.post("/plan/auto", json={
+        "unit": "unit01", "room": "living_dining", "budget_sar": 6543,
+        "style": ["warm", "minimal"]})
+    body = r.json()
+    assert r.status_code == 200
+    assert body["budget_sar"] == 6543
+    assert body["total_sar"] <= 6543
+
+
+def test_the_tier_list_reaches_the_browser_as_data_in_both_modes():
+    """Live and static must offer the same four. A list retyped into studio.js
+    is a second source of truth that drifts the first time an amount changes."""
+    from pathlib import Path
+
+    from app.main import list_units
+    from app.planner import DEFAULT_TIER
+    from tools.export_static import index_payload
+
+    for served in (list_units(), index_payload()):
+        assert served["budget_tiers"] == BUDGET_TIERS
+        # Which one the page opens on is Python's call too, so the tier the
+        # dropdown starts on is always one the exporter planned for.
+        assert served["default_tier"] == DEFAULT_TIER
+    assert DEFAULT_TIER in {t["id"] for t in BUDGET_TIERS}
+
+    js = Path("app/static/studio.js").read_text(encoding="utf-8")
+    # The one legitimate 8000 in that file is the uvicorn port in the "run it
+    # locally" hint, which is not a budget.
+    js = js.replace("port 8000", "port <port>")
+    for tier in BUDGET_TIERS:
+        assert str(tier["sar"]) not in js, f"{tier['id']}'s amount is hardcoded in the browser"
+        assert tier["label"] not in js, f"{tier['id']}'s label is hardcoded in the browser"
+        assert f"'{tier['id']}'" not in js, f"{tier['id']} is named in the browser"
+
+
+def test_the_budget_control_offers_tiers_rather_than_a_free_text_number():
+    """It was `<input type=number>`. On the static build nothing is computed in
+    the browser — every plan is precomputed per context — so typing 8137 SAR
+    changed the number beside the verdict and nothing else. The control now
+    offers exactly the amounts that were planned for."""
+    from pathlib import Path
+
+    html = Path("app/static/index.html").read_text(encoding="utf-8")
+    assert '<select id="budget">' in html
+    assert 'id="budget" type="number"' not in html
+
+
+# --------------------------------------------------------------------------
 # swap — the browser proposes, the engine disposes
 # --------------------------------------------------------------------------
 
@@ -109,9 +201,12 @@ def test_a_swap_that_breaks_a_clearance_is_rejected(plan):
          "dims_cm": i.dims_cm, "price_sar": i.price_sar}
         for i in plan.placed
     ]
-    for p in placements:
-        if p["role"] == "sofa":
-            p["dims_cm"] = {"w": 190, "d": 85, "h": 85}   # shallower: table drifts out of range
+    # Derived from the sofa actually placed, not a hardcoded 190x85. The
+    # catalogue grew from 75 to 280 listings, the winning sofa changed, and a
+    # literal "shallower" depth stopped being shallower than the new one — the
+    # test passed a clean layout and asserted it was broken.
+    sofa = next(p for p in placements if p["role"] == "sofa")
+    sofa["dims_cm"] = {**sofa["dims_cm"], "d": 20}
     result = swap("unit01", "living_dining", placements)
     assert result["validation"]["status"] in {"fail", "unverified"}
 
@@ -196,17 +291,17 @@ def test_static_context_key_matches_between_exporter_and_frontend():
     from tools.export_static import slug
 
     js = Path("app/static/studio.js").read_text(encoding="utf-8")
-    assert ("const planKey = (u, r, s) => "
-            "`${u}__${r}__${(s ?? []).length ? s.join('-') : 'any'}`") in js
+    assert ("const planKey = (u, r, s, t) => "
+            "`${u}__${r}__${(s ?? []).length ? s.join('-') : 'any'}__${t}`") in js
 
     # Same three cases, both spellings.
-    for unit, room, style in [
-        ("unit01", "living_dining", ["warm", "minimal"]),
-        ("unit04", "master_bedroom_1", []),
-        ("unit05", "bedroom", ["boho", "scandi"]),
+    for unit, room, style, tier in [
+        ("unit01", "living_dining", ["warm", "minimal"], "standard"),
+        ("unit04", "master_bedroom_1", [], "starter"),
+        ("unit05", "bedroom", ["boho", "scandi"], "premium"),
     ]:
-        expected = f"{unit}__{room}__{'-'.join(style) if style else 'any'}"
-        assert slug(unit, room, style) == expected
+        expected = f"{unit}__{room}__{'-'.join(style) if style else 'any'}__{tier}"
+        assert slug(unit, room, style, tier) == expected
 
 
 def test_static_studio_falls_back_rather_than_guessing():
@@ -218,6 +313,91 @@ def test_static_studio_falls_back_rather_than_guessing():
     js = Path("app/static/studio.js").read_text(encoding="utf-8")
     assert "'unverified'" in js
     assert "was not precomputed" in js
+
+
+# --------------------------------------------------------------------------
+# content-addressed swap tables
+#
+# Named by context, the swap tables were 200 files holding 28 distinct
+# payloads: 27.6 MB of which 86% was byte-identical, because most budget tiers
+# currently plan the same room and so offer the same substitutions. Naming a
+# file after the hash of its content collapses the copies, whatever the ratio
+# turns out to be after the planner changes.
+# --------------------------------------------------------------------------
+
+def test_identical_swap_tables_are_written_once():
+    """The whole point: two contexts whose swap verdicts came out the same must
+    end up pointing at one file, not two copies of 138 KB."""
+    import tempfile
+    from pathlib import Path
+
+    from tools.export_static import write_addressed
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        table = {"sofa_1|B0ABC": {"validation": {"status": "pass"}}}
+        first = write_addressed(out, table)
+        # Same verdicts, built in a different insertion order — the same table
+        # as far as anything reading it is concerned.
+        second = write_addressed(out, dict(reversed(list(table.items()))))
+        assert first == second
+        assert [p.name for p in out.glob("*.json")] == [f"{first}.json"]
+
+
+def test_the_swap_digest_is_stable_across_builds():
+    """A digest that moved with dict ordering or float formatting would rewrite
+    every swap file on every build — the churn the content addressing exists to
+    remove — and blow up the Pages artifact diff."""
+    import tempfile
+    from pathlib import Path
+
+    from tools.export_static import write_addressed
+
+    table = {"b|B0002": {"total_sar": 1234.5}, "a|B0001": {"total_sar": 10.0}}
+    digests = []
+    for _ in range(2):
+        with tempfile.TemporaryDirectory() as tmp:
+            digests.append(write_addressed(Path(tmp), table))
+    assert digests[0] == digests[1]
+    assert len(digests[0]) >= 8, "too short a digest starts colliding"
+
+
+def test_every_swaps_ref_a_plan_names_exists_on_disk():
+    """The dangling-reference test, and the reason the other two exist.
+
+    The digest is no longer derivable from the context key, so a plan that
+    names a file the exporter did not write is not a 404 the visitor sees — it
+    is a swap picker that silently reports `unverified` for every candidate.
+    Nothing else in the build would notice.
+
+    One unit rather than all three: the same code path, a third of the engine
+    time in the suite.
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from tools.export_static import build_data
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        stats = build_data(out=out, units=["unit05"])
+        data = out / "data"
+
+        plans = sorted((data / "plans").glob("*.json"))
+        assert plans, "the fixture built nothing to check"
+        for path in plans:
+            ref = json.loads(path.read_text(encoding="utf-8")).get("swaps_ref")
+            assert ref, f"{path.name} names no swap table"
+            assert (data / "swaps" / f"{ref}.json").exists(), \
+                f"{path.name} points at a swap table that was never written"
+
+        # Every file written is one some plan asks for: an orphan means a
+        # context was planned twice, or a digest was computed two ways.
+        named = {json.loads(p.read_text(encoding="utf-8"))["swaps_ref"] for p in plans}
+        on_disk = {p.stem for p in (data / "swaps").glob("*.json")}
+        assert on_disk == named
+        assert stats["swap_files"] == len(on_disk)
 
 
 def test_the_studio_frontend_contains_no_geometry():

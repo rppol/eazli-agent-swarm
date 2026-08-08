@@ -1,0 +1,69 @@
+{
+  "verified": "2026-08-08",
+  "method": "Independent re-fetch of every eazli.com source via WebFetch, checked against the claims this repo makes and the numbers hardcoded in app/main.py. The original capture (2026-08-06) was taken through a browser session; this pass confirms it from a different client so the grounding does not rest on a single scrape.",
+  "why": "Every number this project quotes about eazli — the returns-reduction range, the plan quotas, the Fitment clause — is load-bearing. The teardown argues from them and app/main.py enforces them. A claim nobody re-checked is a claim that quietly rots.",
+  "sources": [
+    {
+      "url": "https://www.eazli.com/ai-agents",
+      "status": "confirmed",
+      "confirms": [
+        "Zeina — AI Guide. Verbatim: \"She knows that the early stages of a home plan are usually a mess of tabs, screenshots, and 'maybes'. Zeina filters that noise.\" and that she \"gives you a map\" rather than a catalog or quote.",
+        "Adam — AI Sales Advisor (title only on this page).",
+        "Noura — AI Design Agent (title only on this page)."
+      ],
+      "new_since_capture": [
+        "Claims \"68% Users find home decisions simpler and less stressful with an AI agent by their side\" and \"200k+ Real conversations every month\". Not previously recorded.",
+        "The page states no limit on what any agent may do. The only published scope constraints live on /terms-ai-agent."
+      ]
+    },
+    {
+      "url": "https://www.eazli.com/become-a-vendor",
+      "status": "confirmed",
+      "confirms": [
+        "\"27%-43% Reduction in returns driven by better fit, visualization & expectations\" — the number the whole fit-checking thesis is aimed at.",
+        "\"~19% Increase in average order value through smart bundles & guided upsell\".",
+        "\"~12% AI-assisted conversion rate vs. ~0.5-3% unassisted shopping\"."
+      ],
+      "new_since_capture": [
+        "\"~300% Conversion lift when buyers are guided by AI agents\" — a fourth metric not previously recorded."
+      ],
+      "note": "Only the first vendor FAQ answer is present in fetched HTML; the other four render on expand. Independently reproduces the accordion behaviour the original capture had to use browser automation to get around."
+    },
+    {
+      "url": "https://www.eazli.com/faq",
+      "status": "confirmed",
+      "confirms": [
+        "47 questions, matching the original capture's count exactly.",
+        "\"How do the agents work together?\" and \"Will I need to manage multiple agents?\" are both present — the questions that imply an orchestrator-with-specialists design.",
+        "\"Are AI recommendations professional advice?\" and \"Does Eazli coordinate delivery and installation?\" are present."
+      ],
+      "note": "A plain fetch returns questions with no answers, confirming the lazy-accordion rendering. The answers in kb/raw/faq.json remain the only capture of them and were taken through a browser."
+    },
+    {
+      "url": "https://www.eazli.com/pricing",
+      "status": "confirmed",
+      "confirms": [
+        "Explorer: \"Design 1 room with up to 5 layout options & 10 re-designs each month\".",
+        "Active: \"Design multiple rooms with 15 layout revisions and 20 re-designs each month\", plus taste learning, custom furniture requests and price-drop alerts.",
+        "These match PLANS in app/main.py exactly: explorer {rooms 1, layouts 5, redesigns 10}, active {rooms 99, layouts 15, redesigns 20}."
+      ],
+      "note": "Prices render as \".../ year\" with no figure. The quota numbers are what this project enforces, and those are published."
+    },
+    {
+      "url": "https://www.eazli.com/services",
+      "status": "confirmed",
+      "confirms": [
+        "Named offerings: Home Essentials, Services & Design, AI Agents, Inspiration Hub.",
+        "Named AI tools: AI Room Decorator, AI Exterior Designer, **AI Floor Planner**."
+      ],
+      "note": "Still makes no claim anywhere about fit, measurement, delivery or installation — the gap this prototype is built into. Worth stating plainly: eazli already ships an 'AI Floor Planner', so the contribution here is not the idea of planning a room, it is refusing to assert a spatial fact the engine cannot verify."
+    },
+    {
+      "url": "https://www.eazli.com/terms-ai-agent",
+      "status": "not_refetchable",
+      "reason": "A plain fetch returns only the footer and navigation; the body renders client-side.",
+      "note": "kb/raw/policy-ai-agent-scope.md holds the browser capture, and the two clauses this project leans on are present verbatim there: the Fitment clause (\"You are responsible for verifying all site and access measurements (including doorways, hallways, stairs, and elevators). Eazli shall not be liable if an item (e.g., a sofa) cannot be delivered, moved in, installed, or used as intended...\") and the Visualizations, Dimensions & Color disclaimer. Unverified by a second client, and labelled as such rather than assumed."
+    }
+  ],
+  "outcome": "No claim in this repo was contradicted. Two metrics and one agent statistic were found that the original capture missed, and one page could not be re-fetched by a second client and is marked accordingly."
+}

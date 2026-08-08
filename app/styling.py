@@ -11,11 +11,14 @@ as fit: measure the free wall runs and the free floor left over by the
 validated layout, size the piece from a stated design rule, and be explicit
 that the catalogue cannot supply it.
 
-The captured amazon.sa set has no wall art, no plants and no mirrors — it is
-sofas, tables, storage, rugs and lamps. Every suggestion here therefore says
-`in_catalogue: false` and carries the search that would find one. Naming that
-gap is more useful than papering over it; it is also, for a shopping product,
-the actual finding: **the assortment cannot finish a room it can furnish.**
+The captured amazon.sa set today has no wall art, no plants and no mirrors —
+it is sofas, tables, storage, rugs and lamps. Every suggestion in those
+categories therefore says `in_catalogue: false` and carries the search that
+would find one. Naming that gap is more useful than papering over it; it is
+also, for a shopping product, the actual finding: **the assortment cannot
+finish a room it can furnish.** That statement is checkable, not asserted: see
+`CAPTURED_CATEGORIES` below, which reads the real capture rather than
+repeating this paragraph as code.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Sequence
 
+from app.catalog import parse_capture
 from app.geometry import (FLOOR_COVERING_MAX_H_CM, Placement, Room,
                           WALKWAY_SECONDARY_CM, Wall)
 
@@ -280,15 +284,28 @@ DEFAULT_PERSONALITY = ["wall_art", "large_plant"]
 
 WALL_KINDS = {"wall_art", "textile_wall_hanging", "wall_mirror", "gallery_pair"}
 
-# What the amazon.sa capture actually contains. Everything above is decor, and
-# none of it is in there — the one exception is a floor lamp, which the planner
-# already sources. Stated as a constant so the honesty is checkable by a test
-# rather than asserted in prose.
-CAPTURED_CATEGORIES = frozenset({
-    "sofa", "armchair", "coffee_table", "dining_table", "tv_unit", "bed",
-    "wardrobe", "bookshelf", "rug", "floor_lamp", "appliance", "accessory",
-})
-CATEGORY_FOR_KIND = {"arc_floor_lamp": "floor_lamp"}
+# What the amazon.sa capture actually contains, read from the capture itself
+# rather than hand-typed here. A hand-typed set is a second copy of the truth
+# that silently drifts the moment a re-scrape adds a wall_art or mirror
+# listing — this catalogue would keep claiming `in_catalogue: false` for a
+# category it now stocks, and nobody would notice because nothing failed.
+# Deriving it means the claim can only ever be as stale as `parse_capture`.
+CAPTURED_CATEGORIES = frozenset(p.category for p in parse_capture())
+
+# Decor kind -> the catalog category that would satisfy it, if the capture
+# ever has one. Only kinds whose category differs from their own name need an
+# entry; `CATEGORY_FOR_KIND.get(kind, kind)` is the lookup everywhere else.
+CATEGORY_FOR_KIND = {
+    "arc_floor_lamp": "floor_lamp",
+    "wall_art": "wall_art",
+    "gallery_pair": "wall_art",
+    "textile_wall_hanging": "wall_art",
+    "wall_mirror": "mirror",
+    "large_plant": "plant",
+    "sculptural_plant": "plant",
+    "statement_vase": "vase",
+    "floor_basket": "vase",
+}
 
 # What the render should draw a floor piece as. The viewer has no opinion
 # about decor; it draws the glyph it is told to.

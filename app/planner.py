@@ -66,6 +66,97 @@ RECIPES["master_bedroom_2"] = RECIPES["bedroom"]
 
 GRID_CM = 15
 
+# What the studio's budget control offers.
+#
+# It used to be a free-text number box, which on the static build could not do
+# anything: Pages runs no Python, so every plan is precomputed per context and
+# an arbitrary amount had no file to fetch. The control now offers the amounts
+# the exporter actually plans for, and the tier is part of the context key.
+#
+# Budget is a ceiling, not a target — the planner ranks on style match, then
+# evidence, then price, and stops when the room is full. Above the starter tier
+# this catalogue's best-scoring candidate in every slot is already affordable,
+# so comfort and premium buy headroom rather than a different room, and the
+# spend beside the verdict says so. The notes below describe the headroom.
+#
+# The API is deliberately not restricted to these. An agent or a CLI call is
+# not holding a dropdown; `auto_plan` and /plan/auto still take any number.
+BUDGET_TIERS: list[dict] = [
+    {"id": "starter", "label": "Starter", "sar": 3000,
+     "note": "furnish the essentials"},
+    {"id": "standard", "label": "Standard", "sar": 8000,
+     "note": "the default brief"},
+    {"id": "comfort", "label": "Comfort", "sar": 15000,
+     "note": "room to upgrade the seating"},
+    {"id": "premium", "label": "Premium", "sar": 30000,
+     "note": "best available in every slot"},
+]
+
+DEFAULT_TIER = "standard"
+
+
+# What it takes before an item may be preferred *for costing more*.
+#
+# Target-seeking (below) can make the planner pay more for a slot. That is only
+# defensible if the dearer piece is actually better evidenced, and in this
+# capture the correlation runs the wrong way: of the 36 listings over 15,000
+# SAR, 26 publish no dimensions at all and most carry no rating. "Dearer" here
+# is frequently just a seller's asking price with nothing behind it.
+#
+# So an item may only win on being closer to a budget target if it has a real
+# rating, a review count that is more than one person's opinion, and no flag
+# saying we distrust its dimensions or its price. Below this floor the price
+# term stays cheapest-first, exactly as it was.
+#
+# 5 reviews is where an average stops being a single anecdote. Measured
+# consequence, stated because it matters: NO sofa in this catalogue clears
+# this floor — the entire Interwood quality ladder (linen 1,001 SAR through
+# air-leather 3,205 SAR) has between 0 and 2 reviews per listing. The slot
+# that carries the most spend is therefore the slot that cannot be upgraded,
+# and the honest response is to report that rather than to lower the bar
+# until the feature looks like it works.
+UPGRADE_EVIDENCE_FLOOR = {"min_rating": 3.5, "min_reviews": 5}
+
+# Flags that mean "we do not believe this listing", as opposed to flags that
+# merely record an assumption (`assumed_depth`) or a provenance problem that
+# does not bear on fit (`colour_conflict`).
+PLAUSIBILITY_FLAGS = frozenset({
+    "implausible_for_category",
+    "implausible_price",
+    "dimension_conflict",
+    "incomplete_labelled_dimensions",
+})
+
+# How spare budget is spread across the slots of a room.
+#
+# Keyed by catalogue category. The sofa takes the largest share because it is
+# recipe priority 1, it carries roughly half of a living room's spend, and it
+# is the only slot in this catalogue with anything resembling a quality ladder
+# (linen -> bouclé -> velvet -> air-leather within the Interwood line).
+#
+# Deliberately NOT normalised to 1.0 across whichever slots a recipe happens to
+# have. Normalising would push a bedroom's entire headroom into its rug and
+# lamp — the only two weighted slots it has — and target a 240 SAR rug at
+# several thousand. An unweighted slot gets no headroom, which errs towards
+# not spending, and the totals below sum to 1.0 only for a fully filled
+# living/dining room.
+SLOT_HEADROOM_WEIGHTS = {
+    "sofa": 0.45,
+    "dining_table": 0.25,
+    "coffee_table": 0.15,
+    "tv_unit": 0.08,
+    "rug": 0.04,
+    "floor_lamp": 0.03,
+    # The bedroom's anchors, on the same reasoning as the sofa and the dining
+    # table: bed is recipe priority 1 and takes most of the room's spend,
+    # wardrobe is the other large piece. Without these a bedroom's entire
+    # headroom would land on its lamp and its rug (0.07 between them), which
+    # is the one slot pairing where the catalogue has cheap, well-reviewed
+    # stock and nothing to upgrade to.
+    "bed": 0.45,
+    "wardrobe": 0.25,
+}
+
 
 @dataclass
 class Decision:
@@ -123,6 +214,8 @@ class Plan:
     budget_sar: float = 0.0
     validation: dict = field(default_factory=dict)
     finishing: list[dict] = field(default_factory=list)
+    # Why the budget was not spent. Counts, not prose — see `_unspent_budget`.
+    unspent_budget: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -136,20 +229,49 @@ class Plan:
             "within_budget": self.total_sar <= self.budget_sar,
             "validation": self.validation,
             "finishing": self.finishing,
+            "unspent_budget": self.unspent_budget,
         }
 
 
-def _score(product: Product, style: list[str]) -> tuple:
+def _clears_evidence_floor(product: Product) -> bool:
+    """Whether this item is allowed to win on being dearer. See
+    UPGRADE_EVIDENCE_FLOOR for why the bar exists and where it bites."""
+    return (
+        product.rating is not None
+        and product.rating >= UPGRADE_EVIDENCE_FLOOR["min_rating"]
+        and product.reviews >= UPGRADE_EVIDENCE_FLOOR["min_reviews"]
+        and not (set(product.flags) & PLAUSIBILITY_FLAGS)
+    )
+
+
+def _score(product: Product, style: list[str], slot_target: float | None = None) -> tuple:
     """Rank candidates. Style match first, then evidence, then price.
 
     Ties are broken deterministically so the same request always produces the
     same plan — a planner that shuffles is impossible to review.
+
+    `slot_target` turns the price term from "cheapest" into "closest to this
+    amount", which is the only reason a bigger budget can buy a better room:
+    with price sorting strictly ascending, raising the ceiling could unblock a
+    candidate but never prefer one, and standard, comfort and premium returned
+    byte-identical plans.
+
+    The switch is per candidate, not per slot. An item that does not clear the
+    evidence floor keeps the plain ascending price term, so it can still be
+    picked when it is genuinely the cheapest thing that fits, but it can never
+    be picked *because* it is dearer.
     """
     matched = len(set(product.style_tags) & set(style or []))
+    price = product.price_sar or 1e9
+    price_term = (
+        abs(price - slot_target)
+        if slot_target is not None and _clears_evidence_floor(product)
+        else price
+    )
     return (
         -matched,
         -(product.rating or 0) * min(product.reviews, 200) / 200,
-        product.price_sar or 1e9,
+        price_term,
         product.asin,
     )
 
@@ -159,15 +281,28 @@ def candidates_for(
     catalog: list[Product],
     budget_left: float,
     style: list[str] | None = None,
+    slot_target: float | None = None,
 ) -> list[Product]:
+    """Everything that could fill this slot, best first.
+
+    Budget stays a hard cap regardless of any target: `slot_target` changes
+    the ORDER of this list, never its membership.
+
+    `implausible_price` items are excluded here rather than in `Product.usable`
+    on purpose. They remain in the catalogue and in search results — an agent
+    has to be able to find the 185,350 SAR coffee table in order to say it is
+    dismissing it — but "still in the index" and "silently recommended" are
+    different things, and this is the recommendation path.
+    """
     pool = [
         p for p in catalog
         if p.category == slot["category"]
         and p.usable
+        and "implausible_price" not in p.flags
         and p.price_sar is not None
         and p.price_sar <= budget_left
     ]
-    return sorted(pool, key=lambda p: _score(p, style or []))
+    return sorted(pool, key=lambda p: _score(p, style or [], slot_target))
 
 
 def _front_space(x: float, y: float, w: float, d: float, facing: str, room: Room) -> float:
@@ -233,6 +368,60 @@ def auto_plan(
     catalog: list[Product] | None = None,
     max_positions: int = 400,
 ) -> Plan:
+    """Furnish a room, twice.
+
+    The first pass is the plan this algorithm has always produced: cheapest
+    acceptable candidate per slot, budget as a ceiling. That pass is what
+    establishes the room's *natural* spend, which is the only honest basis for
+    saying how much money is actually spare — a target guessed from the budget
+    alone would be a target for slots that may not even fill.
+
+    The second pass re-runs the search with a per-slot target: natural spend
+    plus that slot's share of the headroom. If there is no headroom, or no slot
+    is eligible for any, the first plan is returned unchanged rather than
+    recomputed to the same answer.
+    """
+    natural = _plan_once(unit, room_name, budget_sar, style, catalog,
+                         max_positions, targets={})
+    targets = _headroom_targets(natural, budget_sar)
+    if not targets:
+        return natural
+    return _plan_once(unit, room_name, budget_sar, style, catalog,
+                      max_positions, targets=targets,
+                      natural_picks={i.slot_id: i.asin for i in natural.placed})
+
+
+def _headroom_targets(natural: Plan, budget_sar: float) -> dict[str, float]:
+    """Per-slot spend to aim at, given what the room costs left to itself.
+
+    Returns {} when there is nothing to redistribute, which is the common case
+    at the starter tier and the signal to skip the second pass entirely.
+    """
+    headroom = max(0.0, budget_sar - natural.total_sar)
+    if headroom <= 0:
+        return {}
+
+    recipe = RECIPES.get(natural.room) or RECIPES.get(natural.room.rstrip("_12")) or []
+    category_for_slot = {s["slot_id"]: s["category"] for s in recipe}
+
+    targets: dict[str, float] = {}
+    for item in natural.placed:
+        weight = SLOT_HEADROOM_WEIGHTS.get(category_for_slot.get(item.slot_id, ""))
+        if weight:
+            targets[item.slot_id] = item.price_sar + headroom * weight
+    return targets
+
+
+def _plan_once(
+    unit: str,
+    room_name: str,
+    budget_sar: float,
+    style: list[str] | None,
+    catalog: list[Product] | None,
+    max_positions: int,
+    targets: dict[str, float],
+    natural_picks: dict[str, str] | None = None,
+) -> Plan:
     home = load_home()
     spec = home.unit(unit).room(room_name)
     room = spec.to_room()
@@ -255,10 +444,16 @@ def auto_plan(
     )
     route = home.route_to(unit, room_name)
     placed: list[Placement] = []
+    # Tallied as the search runs, for the unspent-budget report. Counted here
+    # rather than reconstructed afterwards for the same reason `Decision` is:
+    # a number worked out after the fact is a guess about what happened.
+    access_failures = 0
+    placement_failures = 0
 
     for slot in sorted(recipe, key=lambda s: s["priority"]):
         budget_left = budget_sar - plan.total_sar
-        pool = candidates_for(slot, catalog, budget_left, style)
+        slot_target = targets.get(slot["slot_id"])
+        pool = candidates_for(slot, catalog, budget_left, style, slot_target)
         chosen = None
         rejected: list[dict] = []
         positions_tried_total = 0
@@ -285,6 +480,7 @@ def auto_plan(
                      if "cannot pass" in r or "does not fit" in r or "needs to swing" in r),
                     "cannot reach this room",
                 )
+                access_failures += 1
                 rejected.append({
                     "asin": product.asin, "title": product.title,
                     "price_sar": product.price_sar, "stage": "delivery",
@@ -309,6 +505,7 @@ def auto_plan(
             positions_tried_total += tried
             if chosen:
                 break
+            placement_failures += 1
             rejected.append({
                 "asin": product.asin, "title": product.title,
                 "price_sar": product.price_sar, "stage": "placement",
@@ -318,11 +515,38 @@ def auto_plan(
         if chosen:
             product, trial, access, tried = chosen
             matched = sorted(set(product.style_tags) & set(style or []))
-            chose_because = (
-                f"matched {' + '.join(matched)}" if matched
-                else (f"best evidence available ({product.rating}\u2605, {product.reviews} reviews)"
-                      if product.rating else "cheapest that fits; no style tag or rating to go on")
+            # The narration has to name the mechanism that actually chose this
+            # item. "cheapest that fits" was a hardcoded fallback, true only
+            # while price sorted ascending \u2014 printing it over a piece the
+            # planner deliberately paid more for is exactly the confident
+            # wrong answer this project exists to refuse.
+            #
+            # The test is whether the target CHANGED the pick, not merely
+            # whether one was set. A slot can carry a target, and the item can
+            # clear the evidence floor, and style or evidence can still have
+            # decided it \u2014 claiming an upgrade there would be the same lie
+            # pointed the other way.
+            targeted = (
+                slot_target is not None
+                and _clears_evidence_floor(product)
+                and natural_picks is not None
+                and natural_picks.get(slot["slot_id"]) != product.asin
             )
+            if targeted:
+                chose_because = (
+                    f"budget target for this slot was {slot_target:.0f} SAR; at "
+                    f"{product.price_sar:.0f} SAR this is the closest piece to "
+                    f"that target which clears the evidence floor "
+                    f"({product.rating}\u2605, {product.reviews} reviews)"
+                    + (f", and it matched {' + '.join(matched)}" if matched else "")
+                )
+            elif matched:
+                chose_because = f"matched {' + '.join(matched)}"
+            elif product.rating:
+                chose_because = (f"best evidence available ({product.rating}\u2605, "
+                                 f"{product.reviews} reviews)")
+            else:
+                chose_because = "cheapest that fits; no style tag or rating to go on"
             placed_because = (
                 f"first of {tried} positions tried that passed every rule "
                 f"with the {len(placed)} item(s) already in the room"
@@ -381,7 +605,55 @@ def auto_plan(
     # floor the layout leaves behind, not sourced — the capture has no decor.
     plan.finishing = [styling.to_dict(s)
                       for s in styling.suggest_finishing(room, placed, style or [])]
+    plan.unspent_budget = _unspent_budget(
+        plan, recipe, catalog, access_failures, placement_failures)
     return plan
+
+
+def _unspent_budget(
+    plan: Plan,
+    recipe: list[dict],
+    catalog: list[Product],
+    access_failures: int,
+    placement_failures: int,
+) -> dict:
+    """Why the money was not spent, as counts.
+
+    A premium plan that spends a fraction of its budget looks like a failure
+    unless it can say what stood between the two numbers. It is not a failure:
+    this catalogue genuinely cannot fill a verified 30,000 SAR living/dining
+    room, and the reason is visible in the rejections — the expensive end of
+    the assortment is overwhelmingly the part that publishes no dimensions, so
+    it can never be verified to fit, whatever it costs.
+
+    Deliberately data rather than a sentence. The frontend renders it, and a
+    number the reader can check beats a paragraph they have to trust.
+    """
+    categories = {s["category"] for s in recipe}
+    in_scope = [p for p in catalog if p.category in categories]
+
+    return {
+        "budget_sar": plan.budget_sar,
+        "spent_sar": round(plan.total_sar, 2),
+        "unspent_sar": round(plan.budget_sar - plan.total_sar, 2),
+        "slots_filled": len(plan.placed),
+        "slots_unfilled": len(plan.unfilled),
+        "candidates_in_scope": len(in_scope),
+        "candidates_rejected": {
+            "no_published_dimensions": sum(
+                1 for p in in_scope if not p.dims.known),
+            "dimensions_implausible_for_category": sum(
+                1 for p in in_scope if "implausible_for_category" in p.flags),
+            "price_implausible_for_category": sum(
+                1 for p in in_scope if "implausible_price" in p.flags),
+            "wrong_category_for_the_search": sum(
+                1 for p in in_scope if "category_mismatch" in p.flags),
+            "no_price_published": sum(
+                1 for p in in_scope if p.price_sar is None),
+            "could_not_be_delivered": access_failures,
+            "no_valid_position_left_in_the_room": placement_failures,
+        },
+    }
 
 
 def swap(

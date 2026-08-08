@@ -7,11 +7,26 @@ output; run it locally with `make studio` to have the engine judge every edit li
 
 A working multi-agent system that implements [eazli's](https://www.eazli.com) own
 published agent model — Zeina, Noura and Adam — against a real apartment floor plan and
-75 real amazon.sa listings.
+280 real amazon.sa listings.
 
 **The one idea:** the LLM proposes, Python verifies. No agent decides whether a sofa
 fits. That is computed deterministically and handed to the agents as a fact they may not
 override.
+
+eazli already ships an "AI Floor Planner" — it is named on their
+[services page](https://www.eazli.com/services). So the contribution here is not the
+idea of planning a room. It is the discipline of **refusing to assert a spatial fact the
+engine cannot verify**, which is the mechanism behind the one number eazli sells vendors
+on: *"27%-43% reduction in returns driven by better fit"*. Their own
+[AI agent terms](https://www.eazli.com/terms-ai-agent) disclaim liability for whether an
+item can actually be *"delivered, moved in, installed"* through *"doorways, hallways,
+stairs, and elevators"*. This system checks that instead of disclaiming it.
+
+Every eazli figure quoted in this repo was re-fetched from the live site on 2026-08-08
+by a second client and checked against the constants in `app/main.py` — see
+[`kb/raw/source-verification.json`](kb/raw/source-verification.json). Nothing was
+contradicted; one page renders client-side and is labelled unverified rather than
+assumed.
 
 ```
 Claude Code subagents        MCP shim  →   FastAPI   →   ChromaDB
@@ -75,7 +90,7 @@ isometric view and how the agents argued their way here.
 ```bash
 uv sync
 PYTHONPATH=. uv run python ingest/build_kb.py        # 78 chunks + 6 design rules
-PYTHONPATH=. uv run python ingest/build_catalog.py   # 75 amazon.sa products
+PYTHONPATH=. uv run python ingest/build_catalog.py   # 280 amazon.sa products
 uv run uvicorn app.main:app --port 8000              # docs at /docs
 
 uv run pytest -q                                     # unit + integration

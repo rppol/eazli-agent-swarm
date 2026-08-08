@@ -15,6 +15,7 @@ import { PALETTE } from './palette.js';
 const $ = (s) => document.querySelector(s);
 const state = {
   plan: null, room: null, style: [], assumptions: [],
+  tiers: [], tier: null,
   viewer: null, view: 'iso',
 };
 
@@ -79,7 +80,8 @@ function paintHow(plan) {
   $('#how-body').innerHTML = `
     <ol class="pipeline">
       <li><b>Brief</b><span>${plan.room.replace(/_/g, ' ')} in ${plan.unit},
-        ${money(plan.budget_sar)} SAR, ${state.style.join(' + ') || 'no style preference'}</span></li>
+        ${state.tier ? `${esc(state.tier.label)} budget — ` : ''}${money(plan.budget_sar)} SAR,
+        ${state.style.join(' + ') || 'no style preference'}</span></li>
       <li><b>Space</b><span>${plan.room_cm.width}&times;${plan.room_cm.depth}&nbsp;cm, read off the
         surveyed floor plan &mdash; not estimated</span></li>
       <li><b>Search</b><span>${considered} catalogue candidate(s) ranked, ${positions}
@@ -349,7 +351,7 @@ async function applySwap(slotId, pick) {
  * frame — 90% of it for interactions a visitor may never make.
  */
 const STATIC = document.documentElement.dataset.mode === 'static';
-const planKey = (u, r, s) => `${u}__${r}__${(s ?? []).length ? s.join('-') : 'any'}`;
+const planKey = (u, r, s, t) => `${u}__${r}__${(s ?? []).length ? s.join('-') : 'any'}__${t}`;
 
 const cache = new Map();
 async function json(url) {
@@ -396,7 +398,7 @@ async function staticApi(path, body) {
   if (path === '/plan/flat') {
     try {
       return structuredClone(await json(
-        `./data/flats/${planKey(body.unit, 'flat', state.style)}.json`));
+        `./data/flats/${planKey(body.unit, 'flat', state.style, state.tier?.id)}.json`));
     } catch {
       throw new Error('This build has no precomputed whole-flat plan for that unit.');
     }
@@ -405,28 +407,39 @@ async function staticApi(path, body) {
   if (path === '/plan/auto') {
     try {
       return structuredClone(await json(
-        `./data/plans/${planKey(body.unit, body.room, body.style)}.json`));
+        `./data/plans/${planKey(body.unit, body.room, body.style, state.tier?.id)}.json`));
     } catch {
       throw new Error(`This build has no precomputed plan for ${body.room.replace(/_/g, ' ')}.`);
     }
   }
 
   if (path === '/plan/swap') {
-    const ctx = planKey(body.unit, body.room, state.style);
+    const notBuilt = () => ({
+      ...structuredClone(NOT_BUILT),
+      total_sar: body.placements.reduce((t, p) => t + (p.price_sar || 0), 0),
+    });
+
+    /* The plan names its own swap table; the context key cannot.
+     *
+     * Swap files are content-addressed — named by a hash of what is in them —
+     * because 200 context-named files held 28 distinct payloads and 86% of
+     * 27.6 MB was byte-identical. So the filename is not derivable here; it is
+     * read off the plan, which was fetched before any of this was clickable.
+     * A whole-flat plan carries no ref, and no table was precomputed for one.
+     */
+    const ref = state.plan?.swaps_ref;
+    if (!ref) return notBuilt();
+
     let table;
     try {
-      table = await json(`./data/swaps/${ctx}.json`);
+      table = await json(`./data/swaps/${ref}.json`);
     } catch {
-      return { ...structuredClone(NOT_BUILT),
-               total_sar: body.placements.reduce((t, p) => t + (p.price_sar || 0), 0) };
+      return notBuilt();
     }
     const hit = body.placements
       .map((p) => table[`${p.slot_id}|${p.asin}`])
       .find(Boolean);
-    return hit
-      ? structuredClone(hit)
-      : { ...structuredClone(NOT_BUILT),
-          total_sar: body.placements.reduce((t, p) => t + (p.price_sar || 0), 0) };
+    return hit ? structuredClone(hit) : notBuilt();
   }
 
   throw new Error(`no static data for ${path}`);
@@ -438,9 +451,13 @@ async function runPlan() {
   try {
     const style = $('#style').value ? $('#style').value.split(',') : [];
     state.style = style;
+    // The tier carries the amount. The control used to be a number box, which
+    // the static build could not honour — there is no engine here to re-plan
+    // against a figure nobody exported a plan for.
+    state.tier = state.tiers.find((t) => t.id === $('#budget').value) ?? state.tiers[0];
     const room = $('#room').value;
     const body = { unit: $('#unit').value, room,
-                   budget_sar: Number($('#budget').value), style };
+                   budget_sar: state.tier?.sar, style };
     const plan = room === '__flat__'
       ? await api('/plan/flat', { ...body, room: 'whole flat' })
       : await api('/plan/auto', body);
@@ -467,6 +484,16 @@ async function boot() {
   state.assumptions = home.assumptions || [];
   const unitSel = $('#unit'), roomSel = $('#room');
   unitSel.innerHTML = units.map((u) => `<option value="${u.id}">${esc(u.label)}</option>`).join('');
+
+  // Both modes serve the tiers from the same Python constant — live from
+  // /home/units, static from the index the exporter wrote. Spelling the list
+  // out here as well would let the dropdown offer an amount no plan exists for.
+  const budgetSel = $('#budget');
+  state.tiers = home.budget_tiers ?? [];
+  budgetSel.innerHTML = state.tiers.map((t) =>
+    `<option value="${t.id}" title="${esc(t.note)}">${esc(t.label)} — ${money(t.sar)} SAR</option>`
+  ).join('');
+  budgetSel.value = home.default_tier ?? state.tiers[0]?.id;
 
   const PLANNABLE = new Set(['living_dining', 'bedroom', 'master_bedroom',
                              'master_bedroom_1', 'master_bedroom_2']);

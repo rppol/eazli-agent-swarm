@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from app import store
 from app.catalog import parse_capture
-from app.planner import auto_plan, plan_flat, swap
+from app.planner import BUDGET_TIERS, DEFAULT_TIER, auto_plan, plan_flat, swap
 from app.geometry import (
     Dims,
     Placement,
@@ -240,6 +240,12 @@ def list_units() -> dict:
             for u in home.units
         ],
         "assumptions": home.assumptions,
+        # The studio's budget dropdown is filled from here, and from the same
+        # constant in the static build's index.json. Live and static must offer
+        # the same amounts; a list retyped into studio.js would be a second
+        # source of truth that drifts the first time one of them changes.
+        "budget_tiers": BUDGET_TIERS,
+        "default_tier": DEFAULT_TIER,
     }
 
 
