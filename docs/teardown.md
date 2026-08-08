@@ -31,6 +31,32 @@ That combination is the interesting part. A marketplace that also *designs* has 
 promises about how third-party goods behave in a specific customer's home — and it does
 not control the data those goods arrive with. Section 3 is about what that costs.
 
+### How much of it is actually built
+
+Worth stating plainly, because it changes what a prototype is for. I re-fetched every
+page on 2026-08-08 from a second client and checked what the server actually returns
+(recorded in [`kb/raw/source-verification.json`](../kb/raw/source-verification.json)):
+
+* The FAQ ships **47 questions and no answers** — they render on expand.
+* Pricing shows **`.../ year`** with no figure on either plan. The quota limits are
+  published; the prices are not.
+* The vendor FAQ answers only its first question. Four more are empty headers.
+* On the agents page, **only Zeina has a description.** Adam and Noura have a title
+  each.
+* The AI Agent Disclaimers page returns nothing but nav and footer to a plain fetch.
+
+None of that is a criticism — it is exactly what a pre-launch site looks like, and the
+parts that *are* specified are specified well. The metrics on the vendor page are
+concrete, the plan quotas are exact enough to implement against, and the disclaimers
+page is the most carefully written document on the domain.
+
+But it means the three agents are, today, a described product rather than a demonstrated
+one. So the useful thing to build is not another description. It is a working version of
+the specific claim they are hardest to make good on — that a Designer Agent and a Seller
+Agent, together, will reduce returns "driven by better fit". That is what this prototype
+is: their stated architecture, with the fit problem actually solved, against a real flat
+and 465 real listings.
+
 ---
 
 ## 2. The agent model, and why it's unusually good
