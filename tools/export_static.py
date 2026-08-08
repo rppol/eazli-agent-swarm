@@ -235,6 +235,23 @@ def build_data(out: Path = OUT, units: list[str] | None = None) -> dict:
             "plan_kb": plan_bytes / 1024, "swap_kb": swap_bytes / 1024}
 
 
+def minify_css() -> None:
+    """Ship studio.css the way studio.js is already shipped.
+
+    It was `shutil.copy`, so every comment in the stylesheet was a comment the
+    visitor downloaded before the page could paint — and that sheet is heavily
+    commented on purpose. At 22 KB source it was 8 KB of the first paint budget
+    spent on prose for whoever edits it next. Minified it is 14 KB and the
+    comments cost nothing. Same esbuild that bundles the JS; no new dependency.
+    """
+    result = subprocess.run(
+        ["npx", "--yes", "esbuild@0.24.0", str(SRC / "studio.css"),
+         "--minify", f"--outfile={OUT / 'studio.css'}"],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"esbuild failed on studio.css:\n{result.stderr}")
+
+
 def bundle_js() -> str:
     """Tree-shake and minify three.js + the studio into one file.
 
@@ -266,7 +283,7 @@ def main() -> None:
     OUT.mkdir(parents=True)
 
     stats = build_data()
-    shutil.copy(SRC / "studio.css", OUT / "studio.css")
+    minify_css()
     esbuild_note = bundle_js()
 
     # One bundled module, no import map, relative paths.

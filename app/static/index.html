@@ -17,7 +17,31 @@
 <header>
   <div class="brand">
     <strong>eazli studio</strong>
+    <!-- export_static.py swaps this exact span for the "static build" note, so
+         leave the string alone. The disclaimer is a separate element for the
+         same reason: that rewrite must not be able to take it with it. -->
     <span class="sub">plan a room, swap anything, every verdict from the Python engine</span>
+    <span class="disclaimer"><b>An unaffiliated prototype.</b> Built by a job
+      applicant as a work sample. eazli did not build, commission, review or
+      endorse it. The agent names and avatars below are eazli's.</span>
+  </div>
+  <!-- The eazli agents this prototype models. Avatars hotlinked from their CDN
+       and deprioritised, so they cannot get in front of the plan. alt="" is
+       deliberate: the name is in text beside it, and an empty alt is what lets
+       a failed request fall through to the CSS monogram cleanly. -->
+  <div class="personas">
+    <div class="persona"><span class="persona-av" data-mono="Z"><img alt="" width="28" height="28"
+      loading="lazy" decoding="async" fetchpriority="low"
+      src="https://cdn.eazli.com/agents/zeina_card_avatar.png"></span>
+      <span class="persona-id"><b>Zeina</b><i>AI Guide</i></span></div>
+    <div class="persona"><span class="persona-av" data-mono="A"><img alt="" width="28" height="28"
+      loading="lazy" decoding="async" fetchpriority="low"
+      src="https://cdn.eazli.com/agents/adam_card_avatar.png"></span>
+      <span class="persona-id"><b>Adam</b><i>AI Sales Advisor</i></span></div>
+    <div class="persona"><span class="persona-av" data-mono="N"><img alt="" width="28" height="28"
+      loading="lazy" decoding="async" fetchpriority="low"
+      src="https://cdn.eazli.com/agents/noura_card_avatar.png"></span>
+      <span class="persona-id"><b>Noura</b><i>AI Design Agent</i></span></div>
   </div>
   <div class="controls">
     <label>unit

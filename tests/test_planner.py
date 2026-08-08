@@ -11,6 +11,14 @@ to charge — and this capture is full of 90,000 SAR coffee tables with no
 published dimensions. So target-seeking is gated on evidence, the gate is what
 most of these tests are about, and the narration has to say which mechanism
 actually chose the item.
+
+Target-seeking then turned out not to be enough, and the measurement said so:
+with the gate honoured, unit01's living/dining room cost 3,659 SAR at standard,
+at comfort and at premium alike, and its master bedroom 820 SAR at all four
+tiers. The upgrade path is genuinely blocked — the well-evidenced expensive
+candidates fail DELIVERY, not affordability — so the second half of these tests
+is about the other thing a budget can buy: not a dearer sofa, an armchair as
+well as one. See `RECIPES` and `TestTierGatedSlots`.
 """
 
 from __future__ import annotations
@@ -18,7 +26,8 @@ from __future__ import annotations
 import pytest
 
 from app.catalog import Product, parse_capture
-from app.geometry import Dims
+from app.geometry import Dims, Placement, validate_layout
+from app.home import load_home
 from app.planner import (
     BUDGET_TIERS,
     RECIPES,
@@ -28,7 +37,20 @@ from app.planner import (
     _score,
     auto_plan,
     candidates_for,
+    recipe_for,
+    slots_for_budget,
 )
+
+TIER_SAR = {t["id"]: t["sar"] for t in BUDGET_TIERS}
+
+# Every room the planner will plan, across every unit. Several assertions below
+# have to hold for all of them, not just for the one room that was measured.
+PLANNABLE = [
+    (unit.id, room.name)
+    for unit in load_home().units
+    for room in unit.rooms
+    if room.name in RECIPES
+]
 
 
 def product(asin="A", price=1000.0, rating=4.5, reviews=50, flags=None,
@@ -155,12 +177,40 @@ class TestBudgetChangesThePlan:
         global sum is meaningless. What must hold is that no single recipe
         hands out more than 100% of its own headroom, which would be
         overspending by construction. Unweighted slots get none, which errs
-        towards not spending."""
+        towards not spending.
+
+        Summed over the DISTINCT categories a recipe uses, not over its slots.
+        living_dining now has two floor_lamp slots — the accent lamp and the
+        reading lamp the premium tier unlocks — and counting the lamp share
+        twice would both break this bound and, worse, hand the same 3% of the
+        headroom out to two slots. `_headroom_targets` dedupes by category for
+        exactly that reason, so this sum has to be taken the same way the code
+        allocates."""
         assert SLOT_HEADROOM_WEIGHTS
         for name, recipe in RECIPES.items():
-            allocated = sum(SLOT_HEADROOM_WEIGHTS.get(s["category"], 0.0)
-                            for s in recipe)
+            allocated = sum(SLOT_HEADROOM_WEIGHTS.get(c, 0.0)
+                            for c in {s["category"] for s in recipe})
             assert allocated <= 1.0 + 1e-9, f"{name} allocates {allocated}"
+
+    def test_the_headroom_handed_out_never_exceeds_the_headroom_there_is(self):
+        """The bound above is on the weight table; this one is on what the
+        planner actually does with it. A duplicated category, or a new slot
+        added to a recipe without a matching thought about weights, shows up
+        here as real over-allocation rather than as a table that still sums
+        correctly."""
+        from app.planner import _headroom_targets, _plan_once
+
+        for unit, room in PLANNABLE:
+            for tier in BUDGET_TIERS:
+                natural = _plan_once(unit, room, tier["sar"], ["warm", "minimal"],
+                                     None, 400, targets={})
+                targets = _headroom_targets(natural, tier["sar"])
+                priced = {i.slot_id: i.price_sar for i in natural.placed}
+                extra = sum(t - priced[s] for s, t in targets.items())
+                headroom = tier["sar"] - natural.total_sar
+                assert extra <= headroom + 1e-6, (
+                    f"{unit}/{room}/{tier['id']} aims {extra:.0f} SAR of "
+                    f"upgrades at {headroom:.0f} SAR of headroom")
 
     def test_a_bigger_budget_buys_a_dearer_room_than_the_starter_tier(self):
         starter = auto_plan("unit01", "living_dining", 3000, ["warm", "minimal"])
@@ -216,10 +266,20 @@ class TestBudgetChangesThePlan:
 
         So this pins the cause rather than the symptom. If a re-scrape ever
         brings reviewed premium stock, this is the test that starts failing,
-        and it should be updated rather than loosened."""
+        and it should be updated rather than loosened.
+
+        Scoped to the slots target-seeking can actually reach — the ones with a
+        `SLOT_HEADROOM_WEIGHTS` entry — because a slot with no weight is never
+        given a target and so cannot be upgraded whatever its pool looks like.
+        The comfort tier's bookshelf is exactly that case: it has three
+        evidenced prices in the style-matched tier (188, 197 and 334.02 SAR)
+        and still takes the cheapest, because the headroom is being spent on
+        the slot existing at all rather than on a dearer shelf."""
         catalog = parse_capture()
         style = ["warm", "minimal"]
         for slot in RECIPES["living_dining"]:
+            if slot["category"] not in SLOT_HEADROOM_WEIGHTS:
+                continue
             pool = candidates_for(slot, catalog, 30000, style)
             if not pool:
                 continue
@@ -230,16 +290,15 @@ class TestBudgetChangesThePlan:
                 f"{slot['category']} now has evidenced candidates at several "
                 f"prices — target-seeking can bite here, update this test")
 
-    def test_the_tiers_that_cannot_differ_are_reported_rather_than_disguised(self):
-        """Standard, comfort and premium return the same styled room. That is
-        the catalogue's ceiling, not a planner bug — and the plan has to say so
-        with numbers instead of quietly looking like a 30,000 SAR result."""
-        plans = {t["id"]: auto_plan("unit01", "living_dining", t["sar"],
-                                    ["warm", "minimal"])
-                 for t in BUDGET_TIERS}
-        assert plans["standard"].total_sar == plans["premium"].total_sar
-        gap = plans["premium"].to_dict()["unspent_budget"]
-        assert gap["unspent_sar"] > 25000
+    def test_what_a_bigger_budget_cannot_buy_is_still_reported_rather_than_disguised(self):
+        """A premium living/dining room still leaves most of 30,000 SAR unspent
+        even with every tier-gated slot filled, because the catalogue's dearest
+        deliverable pieces are a few thousand riyals. That is the assortment's
+        ceiling, not a planner bug, and the plan has to say so with numbers
+        instead of quietly looking like a 30,000 SAR result."""
+        premium = auto_plan("unit01", "living_dining", 30000, ["warm", "minimal"])
+        gap = premium.to_dict()["unspent_budget"]
+        assert gap["unspent_sar"] > 15000
         assert sum(gap["candidates_rejected"].values()) > 0
 
     def test_a_bigger_budget_never_costs_a_slot(self):
@@ -326,3 +385,295 @@ class TestItSaysWhyTheBudgetWasNotSpent:
     def test_a_fully_spent_budget_reports_no_headroom(self):
         tight = auto_plan("unit01", "living_dining", 400)
         assert tight.to_dict()["unspent_budget"]["unspent_sar"] >= 0
+
+
+# --------------------------------------------------------------------------
+# spending headroom on more room rather than on dearer objects
+# --------------------------------------------------------------------------
+
+class TestTierGatedSlots:
+    """The honest way for a budget to change a room in THIS catalogue.
+
+    Target-seeking answers "can this tier buy a better sofa?" and the measured
+    answer is no: the well-evidenced expensive candidates are refused by
+    `check_access_path`, not by the budget. B0CC2PLFGN — 3,824 SAR, 800 reviews,
+    the top-ranked sofa — is 150x213x99cm and cannot enter an 85x210cm lift car
+    in any orientation, and that refusal is correct.
+
+    A tier can still buy something real: another piece of furniture. A room with
+    a sofa, coffee table, console, dining table, lamp and rug at 3,659 SAR is
+    not a finished 30,000 SAR living room; it has no armchair, no shelving and
+    one light.
+    """
+
+    def test_the_slots_a_budget_sees_only_ever_grow_with_it(self):
+        """The gate is a floor, not a window. If a bigger budget could ever
+        hide a slot a smaller one was offered, every ordering guarantee below
+        would be built on sand."""
+        for _, room in PLANNABLE:
+            seen = [set(s["slot_id"] for s in slots_for_budget(room, t["sar"])[0])
+                    for t in BUDGET_TIERS]
+            for lower, higher in zip(seen, seen[1:]):
+                assert lower <= higher, f"{room}: {lower - higher} vanished"
+            assert len(seen[-1]) > len(seen[0]), (
+                f"{room} offers the premium tier nothing the starter tier "
+                f"does not already get")
+
+    def test_every_gate_is_set_at_an_amount_a_tier_actually_offers(self):
+        """A slot unlocking at 12,000 SAR would be unreachable from the studio,
+        which only ever asks for the four tier amounts, and would show up as a
+        slot that exists in the code and never in a plan."""
+        amounts = {t["sar"] for t in BUDGET_TIERS}
+        for name, recipe in RECIPES.items():
+            for slot in recipe:
+                unlock = slot.get("unlock_sar", 0.0)
+                assert unlock == 0.0 or unlock in amounts, (
+                    f"{name}/{slot['slot_id']} unlocks at {unlock}")
+
+    def test_a_gated_slot_is_never_required(self):
+        """`required` marks the piece without which the room is not the room it
+        was asked for — a living/dining room with no sofa. Gating one behind a
+        budget would mean the starter tier is asked for a room it is not
+        allowed to have."""
+        for name, recipe in RECIPES.items():
+            for slot in recipe:
+                if slot.get("unlock_sar", 0.0):
+                    assert not slot["required"], f"{name}/{slot['slot_id']}"
+
+    def test_comfort_and_premium_furnish_more_of_the_living_room_than_standard(self):
+        """Measured before this change: standard 3,659 / 6 slots, comfort 3,659
+        / 6, premium 3,659 / 6 — byte-identical rooms behind a 22,000 SAR
+        spread."""
+        plans = {t["id"]: auto_plan("unit01", "living_dining", t["sar"],
+                                    ["warm", "minimal"])
+                 for t in BUDGET_TIERS}
+        assert len(plans["comfort"].placed) > len(plans["standard"].placed)
+        assert len(plans["premium"].placed) > len(plans["comfort"].placed)
+        assert plans["premium"].total_sar > plans["standard"].total_sar
+
+    def test_the_bedroom_tiers_are_no_longer_all_the_same_room(self):
+        """Measured before this change: 820 SAR and four slots at every one of
+        the four tiers, in every bedroom of every unit."""
+        for unit, room in PLANNABLE:
+            if room == "living_dining":
+                continue
+            counts = {t["id"]: len(auto_plan(unit, room, t["sar"],
+                                             ["warm", "minimal"]).placed)
+                      for t in BUDGET_TIERS}
+            assert len(set(counts.values())) > 1, f"{unit}/{room}: {counts}"
+
+    def test_a_bigger_tier_never_returns_a_worse_room(self):
+        """The ordering guarantee, across every plannable room and both ends of
+        the style range.
+
+        Two things must hold between adjacent tiers: the bigger budget fills a
+        superset of the slots, and in a slot they share it does not fall back to
+        a worse-matched or worse-evidenced product. Price is deliberately left
+        out of the comparison — paying more for the same slot is the upgrade
+        path working, not a regression — so the ranking compared here is the
+        style-match and evidence prefix of `_score`, which is what `_score`
+        sorts on before price is consulted at all.
+        """
+        for style in (["warm", "minimal"], []):
+            for unit, room in PLANNABLE:
+                plans = [auto_plan(unit, room, t["sar"], style)
+                         for t in BUDGET_TIERS]
+                for lower, higher in zip(plans, plans[1:]):
+                    low = {i.slot_id: i for i in lower.placed}
+                    high = {i.slot_id: i for i in higher.placed}
+                    assert set(low) <= set(high), (
+                        f"{unit}/{room}/{style}: {higher.budget_sar:.0f} SAR lost "
+                        f"{set(low) - set(high)}")
+                    catalog = {p.asin: p for p in parse_capture()}
+                    for slot_id, was in low.items():
+                        now = high[slot_id]
+                        if now.asin == was.asin:
+                            continue
+                        rank_was = _score(catalog[was.asin], style)[:2]
+                        rank_now = _score(catalog[now.asin], style)[:2]
+                        assert rank_now <= rank_was, (
+                            f"{unit}/{room}/{style}: {slot_id} fell from "
+                            f"{was.asin} to {now.asin} at "
+                            f"{higher.budget_sar:.0f} SAR")
+
+    def test_an_added_slot_is_a_candidate_and_not_a_privilege(self):
+        """Every gated slot goes through `check_fit`, `check_access_path`,
+        `validate_layout` and the budget cap like anything else. The proof that
+        nothing was waved through is that the finished layout still validates
+        and the total still sits under the ceiling — for every room, every tier
+        and both style extremes."""
+        for style in (["warm", "minimal"], []):
+            for unit, room in PLANNABLE:
+                for tier in BUDGET_TIERS:
+                    plan = auto_plan(unit, room, tier["sar"], style)
+                    assert plan.validation["status"] == "pass", (
+                        f"{unit}/{room}/{tier['id']}/{style}: "
+                        f"{plan.validation['reasons']}")
+                    assert plan.total_sar <= tier["sar"]
+
+    def test_an_addition_that_cannot_be_placed_is_dropped_and_says_why(self):
+        """A gated slot with no placeable candidate has to land in `unfilled`
+        with its rejections recorded, exactly like an ungated one. Forced here
+        by planning a bedroom with a catalogue whose only armchair is far too
+        big for the room to hold alongside the bed."""
+        oversized = product("HUGE", 900.0, category="armchair")
+        oversized.dims = Dims(400, 300, 100, confidence="stated")
+        plan = auto_plan("unit01", "bedroom", 30000, [], catalog=[oversized])
+        dropped = {u.slot_id: u for u in plan.unfilled}
+        assert "lounge_chair" in dropped
+        assert dropped["lounge_chair"].candidates_considered == 1
+        assert dropped["lounge_chair"].rejected, "refused without saying why"
+        assert all(r["stage"] in {"delivery", "placement"}
+                   for r in dropped["lounge_chair"].rejected)
+
+    def test_a_slot_the_tier_has_not_unlocked_is_reported_as_locked_not_failed(self):
+        """A starter room is not failing to find an armchair; it was never
+        shopping for one. Filing that under `unfilled` would read as eight
+        rejections the planner never made."""
+        starter = auto_plan("unit01", "living_dining", TIER_SAR["starter"],
+                            ["warm", "minimal"]).to_dict()
+        locked = starter["unspent_budget"]["slots_locked_by_tier"]
+        assert locked, "the starter tier gates slots and does not say so"
+        assert {"slot_id", "role", "unlocks_at_sar"} <= set(locked[0])
+        assert all(s["unlocks_at_sar"] > TIER_SAR["starter"] for s in locked)
+        assert not {s["slot_id"] for s in locked} & {
+            u["slot_id"] for u in starter["unfilled"]}
+
+        premium = auto_plan("unit01", "living_dining", TIER_SAR["premium"],
+                            ["warm", "minimal"]).to_dict()
+        assert premium["unspent_budget"]["slots_locked_by_tier"] == []
+
+
+class TestAnAdditionMustEarnItsPlace:
+    """`_positions` knows how to place against a wall and relative to the sofa,
+    but knowing is not the same as being checked. These pin the two failures an
+    armchair is most likely to cause, so that a future change to the position
+    search cannot quietly start emitting them."""
+
+    def room(self):
+        return load_home().unit("unit01").room("living_dining").to_room()
+
+    def sofa_and_table(self):
+        """A sofa and coffee table that validate on their own, so that the only
+        thing changing in each test below is the armchair."""
+        return [
+            Placement("SOFA", Dims(200, 90, 85), x=60, y=100, facing="S", role="sofa"),
+            Placement("TABLE", Dims(100, 50, 45), x=90, y=240,
+                      facing="N", role="coffee_table"),
+        ]
+
+    def test_the_base_layout_these_tests_build_on_actually_validates(self):
+        assert validate_layout(self.room(), self.sofa_and_table()).status == "pass"
+
+    def test_an_armchair_on_top_of_the_coffee_table_fails(self):
+        room = self.room()
+        chair = Placement("CHAIR", Dims(90, 85, 95), x=95, y=245,
+                          facing="N", role="armchair")
+        verdict = validate_layout(room, [*self.sofa_and_table(), chair])
+        assert verdict.status == "fail"
+        assert any("TABLE and CHAIR overlap" in r for r in verdict.reasons)
+
+    def test_an_armchair_joins_the_seating_group_rather_than_the_far_wall(self):
+        """Validating is not the same as being placed properly, and the first
+        measurement said so: the premium living/dining armchair passed every
+        rule standing 379 cm from the sofa, at the opposite end of a 551 cm
+        room, because `_positions` ranked seating on "as much space in front as
+        the room allows" — which is right for the sofa that has nothing to sit
+        with and exactly backwards for the chair that does.
+
+        An armchair 4 metres from the sofa is two seats in a room, not a
+        seating group. Nobody can hold a conversation across it."""
+        from app.geometry import _gap_between
+
+        plan = auto_plan("unit01", "living_dining", TIER_SAR["premium"],
+                         ["warm", "minimal"])
+        placed = {i.slot_id: i for i in plan.placed}
+        chair, sofa = placed["lounge_chair"], placed["primary_seating"]
+        box = lambda i: (i.x, i.y, i.x + i.dims_cm["w"], i.y + i.dims_cm["d"])
+        assert _gap_between(box(chair), box(sofa)) < 150
+
+    def test_the_second_lamp_does_not_stand_next_to_the_first(self):
+        """Also measured: the reading lamp premium unlocks was placed 6 cm from
+        the accent lamp, both tucked into the same corner, because the default
+        position ranking is "hug a wall, then nearest the origin" and nothing
+        told it one of those lamps was already there. Two lamps in one corner
+        is one lamp and a spare."""
+        from app.geometry import _gap_between
+
+        plan = auto_plan("unit01", "living_dining", TIER_SAR["premium"],
+                         ["warm", "minimal"])
+        lamps = [i for i in plan.placed if i.role == "floor_lamp"]
+        assert len(lamps) == 2
+        box = lambda i: (i.x, i.y, i.x + i.dims_cm["w"], i.y + i.dims_cm["d"])
+        assert _gap_between(box(lamps[0]), box(lamps[1])) > 150
+
+    def test_an_armchair_parked_in_the_sofas_walkway_fails(self):
+        """Legal on every other rule — inside the room, clear of the door,
+        touching nothing — and it stands 20cm off the front of the sofa."""
+        room = self.room()
+        sofa, _ = self.sofa_and_table()
+        chair = Placement("CHAIR", Dims(90, 85, 95), x=60, y=210,
+                          facing="N", role="armchair")
+        verdict = validate_layout(room, [sofa, chair])
+        assert verdict.status == "fail"
+        assert any("walkway in front of SOFA" in r for r in verdict.reasons)
+
+
+class TestThePanelCanWriteAProductBrief:
+    """The studio renders a per-product brief straight out of the plan JSON, so
+    everything the brief shows has to be in `PlacedItem` rather than fetched
+    from a second source that could disagree with the plan.
+    """
+
+    def test_every_placed_item_carries_what_a_brief_needs(self):
+        plan = auto_plan("unit01", "living_dining", 30000, ["warm", "minimal"])
+        needed = {
+            "title", "asin", "url", "price_sar", "category",
+            "dims_cm", "dims_confidence",
+            "colour_hex", "colour_source", "material", "material_source",
+            "rating", "reviews", "flags", "flat_pack", "access", "decision",
+        }
+        assert plan.placed
+        for item in plan.to_dict()["placed"]:
+            assert needed <= set(item), f"{item['asin']} is missing {needed - set(item)}"
+            assert set(item["decision"]) >= {
+                "considered", "chose_because", "ranked_above", "rejected"}
+            assert item["access"]["status"] in {"pass", "unverified"}
+
+    def test_the_brief_reads_from_the_same_product_the_planner_scored(self):
+        """Not re-derived, not defaulted. If the panel and the ranking can
+        disagree about a product's rating, one of them is describing a
+        different item to the one that will arrive."""
+        catalog = {p.asin: p for p in parse_capture()}
+        plan = auto_plan("unit01", "living_dining", 30000, [])
+        for item in plan.placed:
+            source = catalog[item.asin]
+            assert item.rating == source.rating
+            assert item.reviews == source.reviews
+            assert item.flags == source.flags
+            assert item.category == source.category
+            assert item.colour_source == source.colour_source
+            assert item.material_source == source.material_source
+
+    def test_an_unpublished_fact_is_null_rather_than_a_stand_in_value(self):
+        """The brief has to be able to say "not published". A rating defaulted
+        to 0.0 says the buyers rated it zero, and a colour defaulted to grey
+        says the seller published grey — both are confident wrong answers about
+        something nobody stated."""
+        blank = product("BLANK", 900.0, rating=None, reviews=0)
+        blank.colour_hex, blank.colour_source = None, "missing"
+        blank.material, blank.material_source = None, "missing"
+        item = auto_plan("unit01", "living_dining", 30000, [],
+                         catalog=[blank]).to_dict()["placed"][0]
+        assert item["rating"] is None
+        assert item["colour_hex"] is None
+        assert item["material"] is None
+        assert item["colour_source"] == "missing"
+
+
+def test_recipe_for_resolves_the_bedroom_aliases():
+    """`master_bedroom_2` is the bedroom recipe. That lookup was spelled out
+    twice, in `auto_plan` and in `_headroom_targets`, and the two had to agree
+    about a room name neither of them defines."""
+    assert recipe_for("master_bedroom_2") is RECIPES["bedroom"]
+    assert recipe_for("kitchen") == []

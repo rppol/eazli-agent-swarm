@@ -13,7 +13,8 @@ placement is arithmetic and belongs here.
 
 The room recipes below encode which slots a room type wants and in what order
 they get placed. Anchors go first because everything else is positioned
-relative to them.
+relative to them. Some slots are gated on the budget — see `unlock_sar` and the
+note above `RECIPES`.
 """
 
 from __future__ import annotations
@@ -31,8 +32,72 @@ from app.geometry import (
 )
 from app.home import load_home
 
+# What the studio's budget control offers.
+#
+# It used to be a free-text number box, which on the static build could not do
+# anything: Pages runs no Python, so every plan is precomputed per context and
+# an arbitrary amount had no file to fetch. The control now offers the amounts
+# the exporter actually plans for, and the tier is part of the context key.
+#
+# What a bigger tier buys is MORE ROOM, not dearer objects, and the notes say
+# so because the measurement forced it to. Ranking on style, then evidence,
+# then price left standard, comfort and premium returning the same 3,659 SAR
+# living/dining room and the same 820 SAR bedroom: the upgrade path is blocked
+# by delivery rather than by money. B0CC2PLFGN — the top-ranked sofa at 3,824
+# SAR with 800 reviews — is 150x213x99cm and cannot enter the 85x210cm lift
+# car in any orientation. So the tiers unlock further SLOTS instead; see
+# `unlock_sar` in RECIPES.
+#
+# The API is deliberately not restricted to these. An agent or a CLI call is
+# not holding a dropdown; `auto_plan` and /plan/auto still take any number,
+# and a slot unlocks on the amount rather than on a tier id for that reason.
+BUDGET_TIERS: list[dict] = [
+    {"id": "starter", "label": "Starter", "sar": 3000,
+     "note": "furnish the essentials"},
+    {"id": "standard", "label": "Standard", "sar": 8000,
+     "note": "the essentials, plus a bedside table"},
+    {"id": "comfort", "label": "Comfort", "sar": 15000,
+     "note": "adds an armchair and shelving"},
+    {"id": "premium", "label": "Premium", "sar": 30000,
+     "note": "adds a second light and a side table"},
+]
+
+DEFAULT_TIER = "standard"
+
+_SAR = {t["id"]: t["sar"] for t in BUDGET_TIERS}
+
 # Slot recipes per room type. Order is placement order: the anchor first, then
 # whatever hangs off it.
+#
+# `unlock_sar` is the budget at which an optional slot is offered at all;
+# absent means always. It exists because a bigger budget could otherwise do
+# nothing here. Every one of the four tiers returned the same styled room above
+# starter, and raising the price term does not help when the dearer candidates
+# are the ones `check_access_path` refuses — so the money buys another piece of
+# furniture instead, which is a difference the catalogue can actually supply.
+#
+# The choices are constrained by what is in stock, counting only listings that
+# are `usable`, priced and not `implausible_price`: armchair 9 (380-5,000 SAR),
+# bookshelf 20 (34-11,746), floor_lamp 10 (129-360), nightstand 2 (299 each).
+# Wall art, mirrors and plants are deliberately NOT slots — they hang or sit
+# on something rather than taking a floor footprint, and `styling.py` already
+# measures the wall and floor they would go on.
+#
+# A gated slot is never `required`: the tier decides how furnished the room is,
+# never whether it is the room that was asked for.
+#
+# Gates, and why each sits where it does. The amounts are what the tier is for,
+# not what the piece costs — this catalogue's additions are cheap, and the
+# `unspent_budget` report keeps saying so rather than the gate pretending
+# otherwise:
+#   standard  a bed with nowhere to put a glass of water is the most obviously
+#             missing piece in this recipe, and the bedroom essentials cost
+#             820 SAR of the tier's 8,000. Starter is the essentials.
+#   comfort   an armchair and shelving are what turn a furnished living room
+#             into an inhabited one. Measured on unit01 warm+minimal, the pair
+#             adds 837 SAR to a 3,659 SAR room.
+#   premium   one lamp is not a lighting scheme for a 18-20 m² living/dining
+#             room, and a sofa with nothing beside it has nowhere to set a cup.
 RECIPES: dict[str, list[dict]] = {
     "living_dining": [
         {"slot_id": "primary_seating", "role": "sofa", "category": "sofa",
@@ -45,9 +110,24 @@ RECIPES: dict[str, list[dict]] = {
          "facings": ["S"], "priority": 4, "required": False},
         {"slot_id": "accent_lighting", "role": "floor_lamp", "category": "floor_lamp",
          "facings": ["N"], "priority": 5, "required": False},
+        # The gated slots come after every ungated one, so that unlocking them
+        # cannot take budget away from a slot a smaller tier had already
+        # filled. `budget_left` is read in priority order.
+        {"slot_id": "lounge_chair", "role": "armchair", "category": "armchair",
+         "facings": ["N", "S", "E", "W"], "priority": 6, "required": False,
+         "unlock_sar": _SAR["comfort"]},
+        {"slot_id": "shelving", "role": "bookshelf", "category": "bookshelf",
+         "facings": ["S", "N", "E", "W"], "priority": 7, "required": False,
+         "unlock_sar": _SAR["comfort"]},
+        {"slot_id": "reading_light", "role": "floor_lamp", "category": "floor_lamp",
+         "facings": ["S"], "priority": 8, "required": False,
+         "unlock_sar": _SAR["premium"]},
+        {"slot_id": "side_table", "role": "side_table", "category": "nightstand",
+         "facings": ["N", "S", "E", "W"], "priority": 9, "required": False,
+         "unlock_sar": _SAR["premium"]},
         # Last, because it goes under whatever is already there.
         {"slot_id": "floor_covering", "role": "rug", "category": "rug",
-         "facings": ["N"], "priority": 6, "required": False},
+         "facings": ["N"], "priority": 10, "required": False},
     ],
     "bedroom": [
         {"slot_id": "bed", "role": "bed", "category": "bed",
@@ -56,8 +136,17 @@ RECIPES: dict[str, list[dict]] = {
          "facings": ["S"], "priority": 2, "required": False},
         {"slot_id": "reading_light", "role": "floor_lamp", "category": "floor_lamp",
          "facings": ["S"], "priority": 3, "required": False},
+        {"slot_id": "bedside_table", "role": "side_table", "category": "nightstand",
+         "facings": ["N", "S", "E", "W"], "priority": 4, "required": False,
+         "unlock_sar": _SAR["standard"]},
+        {"slot_id": "shelving", "role": "bookshelf", "category": "bookshelf",
+         "facings": ["S", "N", "E", "W"], "priority": 5, "required": False,
+         "unlock_sar": _SAR["comfort"]},
+        {"slot_id": "lounge_chair", "role": "armchair", "category": "armchair",
+         "facings": ["N", "S", "E", "W"], "priority": 6, "required": False,
+         "unlock_sar": _SAR["premium"]},
         {"slot_id": "floor_covering", "role": "rug", "category": "rug",
-         "facings": ["S"], "priority": 4, "required": False},
+         "facings": ["S"], "priority": 7, "required": False},
     ],
 }
 RECIPES["master_bedroom"] = RECIPES["bedroom"]
@@ -66,33 +155,29 @@ RECIPES["master_bedroom_2"] = RECIPES["bedroom"]
 
 GRID_CM = 15
 
-# What the studio's budget control offers.
-#
-# It used to be a free-text number box, which on the static build could not do
-# anything: Pages runs no Python, so every plan is precomputed per context and
-# an arbitrary amount had no file to fetch. The control now offers the amounts
-# the exporter actually plans for, and the tier is part of the context key.
-#
-# Budget is a ceiling, not a target — the planner ranks on style match, then
-# evidence, then price, and stops when the room is full. Above the starter tier
-# this catalogue's best-scoring candidate in every slot is already affordable,
-# so comfort and premium buy headroom rather than a different room, and the
-# spend beside the verdict says so. The notes below describe the headroom.
-#
-# The API is deliberately not restricted to these. An agent or a CLI call is
-# not holding a dropdown; `auto_plan` and /plan/auto still take any number.
-BUDGET_TIERS: list[dict] = [
-    {"id": "starter", "label": "Starter", "sar": 3000,
-     "note": "furnish the essentials"},
-    {"id": "standard", "label": "Standard", "sar": 8000,
-     "note": "the default brief"},
-    {"id": "comfort", "label": "Comfort", "sar": 15000,
-     "note": "room to upgrade the seating"},
-    {"id": "premium", "label": "Premium", "sar": 30000,
-     "note": "best available in every slot"},
-]
 
-DEFAULT_TIER = "standard"
+def recipe_for(room_name: str) -> list[dict]:
+    """Every slot a room type wants, gated or not.
+
+    The `master_bedroom_2` -> `bedroom` fallback was spelled out separately in
+    `auto_plan` and in `_headroom_targets`, which meant two places had to agree
+    about a room name neither of them defines.
+    """
+    return RECIPES.get(room_name) or RECIPES.get(room_name.rstrip("_12")) or []
+
+
+def slots_for_budget(room_name: str, budget_sar: float) -> tuple[list[dict], list[dict]]:
+    """(what this budget may shop for, what it has not unlocked), in placement order.
+
+    The gate is a floor and never a window: raising the budget can only ever
+    add slots. Everything downstream — the ordering guarantee that a bigger
+    tier never returns a smaller room, and the greedy budget spend in priority
+    order — rests on that being true by construction rather than by luck.
+    """
+    ordered = sorted(recipe_for(room_name), key=lambda s: s["priority"])
+    unlocked = [s for s in ordered if s.get("unlock_sar", 0.0) <= budget_sar]
+    locked = [s for s in ordered if s.get("unlock_sar", 0.0) > budget_sar]
+    return unlocked, locked
 
 
 # What it takes before an item may be preferred *for costing more*.
@@ -176,11 +261,26 @@ class Decision:
 
 @dataclass
 class PlacedItem:
+    """One product, placed — and everything the panel needs to describe it.
+
+    The studio renders a click-through brief straight out of this, so what the
+    brief shows has to travel with the plan rather than be fetched from a second
+    source that could disagree with the ranking. `rating`, `reviews`, `flags`,
+    `category` and the two `_source` fields were the gaps: without them the
+    panel had to re-look-up the product it was already holding.
+
+    Anything the listing does not publish is passed through as `None`, not as a
+    stand-in. A rating defaulted to 0.0 tells the reader that buyers rated it
+    zero; a colour defaulted to grey tells them the seller published grey. The
+    brief has to be able to say "not published", which it can only do if the
+    null survives this far.
+    """
     slot_id: str
     role: str
     asin: str
     title: str
     url: str
+    category: str
     price_sar: float
     dims_cm: dict
     dims_confidence: str
@@ -190,7 +290,12 @@ class PlacedItem:
     access: dict
     flat_pack: bool
     colour_hex: str | None
+    colour_source: str
     material: str | None
+    material_source: str
+    rating: float | None
+    reviews: int
+    flags: list[str]
     decision: Decision
 
 
@@ -333,25 +438,41 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
     ys = sorted({0.0, max_y, *[float(v) for v in range(0, int(max_y) + 1, GRID_CM)]})
     role = slot["role"]
     anchors = [p for p in placed if p.resolved_role() in {"sofa", "armchair"}]
+    sofas = [p for p in placed if p.resolved_role() == "sofa"]
+    # Pieces of the same kind already in the room. The richer tiers add a
+    # SECOND floor lamp and a second seat, and every rule in the engine is
+    # satisfied by standing them side by side: the two lamps came out 45 cm
+    # apart against the same wall, which passes every clearance and looks
+    # like a mistake.
+    twins = [p for p in placed if p.resolved_role() == role]
 
     def rank(candidate):
         x, y, facing = candidate
         touching = x <= 1 or y <= 1 or x >= max_x - 1 or y >= max_y - 1
         front = _front_space(x, y, w, d, facing, room)
+        # Negated so that "far from its twin" sorts first.
+        spread = -min((abs(x - p.x) + abs(y - p.y) for p in twins), default=0.0)
 
         if role in {"sofa", "armchair"}:
             # Back to a wall, then as much open space in front as the room allows.
             back_to_wall = _front_space(x, y, w, d, _OPPOSITE[facing], room) <= 1
-            return (not back_to_wall, -front, x + y)
+            if role == "armchair" and sofas:
+                # An armchair is an addition to a seating group, not a second
+                # focal point. Ranked purely on back-to-wall it took the far
+                # wall of the room and read as abandoned furniture, so it is
+                # drawn toward the sofa the way the coffee table already is.
+                ax, ay, *_ = sofas[0].footprint()
+                return (spread, not back_to_wall, abs(x - ax) + abs(y - ay))
+            return (spread, not back_to_wall, -front, x + y)
         if role == "coffee_table" and anchors:
             # As close to the seating as the rules permit.
             ax, ay, *_ = anchors[0].footprint()
-            return (abs(x - ax) + abs(y - ay), 0, 0)
+            return (spread, abs(x - ax) + abs(y - ay), 0)
         if role == "dining_table" and anchors:
             # The other end of the room from the seating group.
             ax, ay, *_ = anchors[0].footprint()
-            return (-(abs(x - ax) + abs(y - ay)), 0, 0)
-        return (not touching, x + y, 0)
+            return (spread, -(abs(x - ax) + abs(y - ay)), 0)
+        return (spread, not touching, x + y)
 
     grid = [(x, y, f) for x in xs for y in ys for f in slot["facings"]]
     yield from sorted(grid, key=rank)
@@ -401,13 +522,21 @@ def _headroom_targets(natural: Plan, budget_sar: float) -> dict[str, float]:
     if headroom <= 0:
         return {}
 
-    recipe = RECIPES.get(natural.room) or RECIPES.get(natural.room.rstrip("_12")) or []
-    category_for_slot = {s["slot_id"]: s["category"] for s in recipe}
+    category_for_slot = {s["slot_id"]: s["category"] for s in recipe_for(natural.room)}
 
     targets: dict[str, float] = {}
+    # A category's share is handed out once, to the first slot of that category
+    # the plan filled. living_dining now has two floor_lamp slots — the accent
+    # lamp and the reading lamp premium unlocks — and paying each of them the
+    # lamp's 3% would allocate 103% of the room's headroom. `natural.placed` is
+    # already in priority order, so "first" is the anchor slot rather than the
+    # afterthought.
+    spent_on: set[str] = set()
     for item in natural.placed:
-        weight = SLOT_HEADROOM_WEIGHTS.get(category_for_slot.get(item.slot_id, ""))
-        if weight:
+        category = category_for_slot.get(item.slot_id, "")
+        weight = SLOT_HEADROOM_WEIGHTS.get(category)
+        if weight and category not in spent_on:
+            spent_on.add(category)
             targets[item.slot_id] = item.price_sar + headroom * weight
     return targets
 
@@ -426,7 +555,7 @@ def _plan_once(
     spec = home.unit(unit).room(room_name)
     room = spec.to_room()
     catalog = catalog if catalog is not None else parse_capture()
-    recipe = RECIPES.get(room_name) or RECIPES.get(room_name.rstrip("_12")) or []
+    recipe, locked = slots_for_budget(room_name, budget_sar)
 
     plan = Plan(
         unit=unit, room=room_name, budget_sar=budget_sar,
@@ -450,7 +579,7 @@ def _plan_once(
     access_failures = 0
     placement_failures = 0
 
-    for slot in sorted(recipe, key=lambda s: s["priority"]):
+    for slot in recipe:
         budget_left = budget_sar - plan.total_sar
         slot_target = targets.get(slot["slot_id"])
         pool = candidates_for(slot, catalog, budget_left, style, slot_target)
@@ -556,6 +685,7 @@ def _plan_once(
             plan.placed.append(PlacedItem(
                 slot_id=slot["slot_id"], role=slot["role"], asin=product.asin,
                 title=product.title, url=product.url,
+                category=product.category,
                 price_sar=product.price_sar or 0,
                 dims_cm={"w": product.dims.w, "d": product.dims.d, "h": product.dims.h},
                 dims_confidence=product.dims_confidence,
@@ -570,7 +700,16 @@ def _plan_once(
                 },
                 flat_pack=product.flat_pack,
                 colour_hex=product.colour_hex,
+                colour_source=product.colour_source,
                 material=product.material,
+                material_source=product.material_source,
+                # Straight off the Product the ranking scored, nulls included.
+                # `rating` is None on roughly a third of this capture and the
+                # brief has to be able to print "not published" rather than a
+                # zero nobody gave it.
+                rating=product.rating,
+                reviews=product.reviews,
+                flags=list(product.flags),
                 decision=Decision(
                     considered=len(pool),
                     ranked_above=[
@@ -606,13 +745,14 @@ def _plan_once(
     plan.finishing = [styling.to_dict(s)
                       for s in styling.suggest_finishing(room, placed, style or [])]
     plan.unspent_budget = _unspent_budget(
-        plan, recipe, catalog, access_failures, placement_failures)
+        plan, recipe, locked, catalog, access_failures, placement_failures)
     return plan
 
 
 def _unspent_budget(
     plan: Plan,
     recipe: list[dict],
+    locked: list[dict],
     catalog: list[Product],
     access_failures: int,
     placement_failures: int,
@@ -638,6 +778,16 @@ def _unspent_budget(
         "unspent_sar": round(plan.budget_sar - plan.total_sar, 2),
         "slots_filled": len(plan.placed),
         "slots_unfilled": len(plan.unfilled),
+        # Not a failure and deliberately not filed as one. A starter room is
+        # not failing to find an armchair; it was never shopping for one, and
+        # listing it beside eight genuine rejections would read as a ninth.
+        # This is the other half of the answer to "why is the money still
+        # here": some of it is unspent because this tier's scope stops short.
+        "slots_locked_by_tier": [
+            {"slot_id": s["slot_id"], "role": s["role"],
+             "unlocks_at_sar": s["unlock_sar"]}
+            for s in locked
+        ],
         "candidates_in_scope": len(in_scope),
         "candidates_rejected": {
             "no_published_dimensions": sum(

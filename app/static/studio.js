@@ -68,6 +68,7 @@ function render(plan) {
   // Text first, always. The room follows whenever three.js has landed.
   paintVerdict(plan.validation, plan.total_sar, plan.budget_sar);
   paintHow(plan);
+  renderAgentLog(plan);
   paintPanel(plan);
   viewerReady.then((v) => { if (v) { v.draw(plan._flat ?? plan); v.setView(state.view); } });
 }
@@ -173,18 +174,24 @@ function decisionHtml(i) {
  * nowhere on the page you could tell that nobody had stated one. Unknown gets
  * the hatched slate instead — the same treatment the piece carries in the
  * viewport, so the two are learnable as one thing. `background-color`, not the
- * `background` shorthand, because the shorthand would wipe the CSS hatch. */
-function swatch(i) {
+ * `background` shorthand, because the shorthand would wipe the CSS hatch.
+ *
+ * `size` is for the brief, which shows the same dot inside the modal: the
+ * stylesheet sizes `.item .swatch`, and out there it would collapse to
+ * nothing. One function either way, so the two dots cannot drift apart. */
+const INLINE_DOT = 'display:inline-block;width:11px;height:11px;border-radius:3px';
+function swatch(i, size = '') {
   return i.colour_hex
-    ? `<span class="swatch" style="background-color:${i.colour_hex}"
+    ? `<span class="swatch" style="background-color:${i.colour_hex};${size}"
              title="colour published by the listing"></span>`
-    : `<span class="swatch unknown" style="background-color:${UNKNOWN_COLOUR}"
+    : `<span class="swatch unknown" style="background-color:${UNKNOWN_COLOUR};${size}"
              title="the listing publishes no colour"></span>`;
 }
 
 function paintPanel(plan) {
   $('#items').innerHTML = plan.placed.map((i) => `
-    <div class="item" data-slot="${i.slot_id}" data-role="${i.role}">
+    <div class="item" data-slot="${i.slot_id}" data-role="${i.role}"
+         tabindex="0" role="button" aria-label="Open the brief for ${esc(i.title)}">
       <div class="item-head">
         ${swatch(i)}
         <div class="item-main">
@@ -246,9 +253,20 @@ function paintPanel(plan) {
   $('#items').querySelectorAll('.swap').forEach((b) => {
     b.onclick = () => openPicker(b.dataset.slot, b.dataset.role);
   });
+  // The row is already three things: a hover-highlight for the 3D view and a
+  // home for the "Why this?" and "Swap…" buttons. Opening the brief is a
+  // fourth, so it stands aside for anything inside the row that is already
+  // clickable rather than swallowing it.
   $('#items').querySelectorAll('.item[data-slot]').forEach((el) => {
     el.onmouseenter = () => highlight(el.dataset.slot, true);
     el.onmouseleave = () => highlight(el.dataset.slot, false);
+    el.onclick = (e) => {
+      if (e.target.closest('.actions, .detail, a, button')) return;
+      openBrief(el.dataset.slot);
+    };
+    el.onkeydown = (e) => {
+      if (e.key === 'Enter' && e.target === el) openBrief(el.dataset.slot);
+    };
   });
 }
 
@@ -274,6 +292,254 @@ function humaniseWithin(text, items) {
 
 function humanise(text) {
   return humaniseWithin(text, state.plan?.placed ?? []);
+}
+
+/** Put the measurements in a sentence the engine wrote into `<code>`.
+ *
+ *  A number buried in prose reads as a claim; a number in a monospace box
+ *  reads as something you can go and check with a tape measure, which is what
+ *  every one of these is. Escapes FIRST — this inserts markup, so it must
+ *  never be handed text that has already been marked up. */
+const measure = (text) => esc(text).replace(
+  /\d[\d,]*(?:\.\d+)?(?:\s?[x×]\s?\d[\d,]*(?:\.\d+)?)*\s?(?:cm|SAR)\b/g,
+  (m) => `<code>${m}</code>`);
+
+// ---------------------------------------------------------------- the agent log
+/* Who decided what, in the words of the agent that owns the decision.
+ *
+ * eazli ships three agents — Zeina, Noura, Adam — and this project adds an
+ * adversarial fourth with the authority to reject. The plan JSON already
+ * records everything the four of them concluded. Nothing here re-derives any
+ * of it: this section is attribution and phrasing, and nothing else.
+ *
+ * The rule the whole section exists to keep is that no sentence may assert
+ * something the plan does not contain. There is no template that fires "a
+ * considered choice for this space" over an empty field — where an agent has
+ * nothing to report it says one honest line instead. Every builder below is a
+ * pure function of the plan, which is what makes that checkable: test_studio.py
+ * runs them in node over real exported plans and re-finds every measurement
+ * they print in the JSON it was printed from.
+ */
+
+const AGENTS = {
+  zeina: { name: 'Zeina', role: 'AI Guide', avatar: 'zeina_card_avatar.png', mono: 'Z' },
+  noura: { name: 'Noura', role: 'AI Design Agent', avatar: 'noura_card_avatar.png', mono: 'N' },
+  adam: { name: 'Adam', role: 'AI Sales Advisor', avatar: 'adam_card_avatar.png', mono: 'A' },
+  // Not an eazli persona, so eazli publishes no card for it. The monogram is
+  // its face rather than a hotlink that would 404 on every single load.
+  auditor: { name: 'fit-auditor', role: 'adversarial review, authority to reject',
+             avatar: null, mono: '!' },
+};
+
+/* A letter on a disc, as a data: URI. Quote characters are percent-encoded
+ * because this string is interpolated into an inline `onerror` attribute, and
+ * spaces because a bare space in a URI is not portable. */
+const monogram = (ch) => 'data:image/svg+xml,'
+  + '%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20viewBox=%270%200%2064%2064%27%3E'
+  + '%3Crect%20width=%2764%27%20height=%2764%27%20rx=%2732%27%20fill=%27%23334155%27/%3E'
+  + '%3Ctext%20x=%2732%27%20y=%2742%27%20text-anchor=%27middle%27%20font-size=%2728%27'
+  + '%20font-family=%27sans-serif%27%20fill=%27%23e2e8f0%27%3E' + ch + '%3C/text%3E%3C/svg%3E';
+
+function agentHead(key) {
+  const a = AGENTS[key];
+  const fallback = monogram(a.mono);
+  // Hotlinked from a CDN this build does not control, below the fold, and not
+  // worth a millisecond of first paint. If it 404s the monogram takes over —
+  // `onerror = null` first, so a failing fallback cannot loop.
+  return `<div class="agent-head">
+      <img src="${a.avatar ? `https://cdn.eazli.com/agents/${a.avatar}` : fallback}"
+           alt="" width="36" height="36" loading="lazy"
+           onerror="this.onerror=null;this.src='${fallback}'">
+      <span class="agent-name">${esc(a.name)}</span>
+      <span class="agent-role">${esc(a.role)}</span>
+    </div>`;
+}
+
+function agentTurn(key, says, gotchas = []) {
+  return `<div class="agent-turn ${key}">${agentHead(key)}
+    <div class="agent-says">${says}</div>
+    ${gotchas.map((g) => `<div class="agent-gotcha">${g}</div>`).join('')}
+  </div>`;
+}
+
+const slotWords = (id) => esc(String(id).replace(/_/g, ' '));
+
+/** The rejection tally, which a whole-flat plan keeps per room.
+ *
+ *  Summed across rooms it double-counts a listing that was in scope for two of
+ *  them, so the flat case says so rather than presenting a tidier number. */
+function unspentOf(plan) {
+  if (plan.unspent_budget) return { ...plan.unspent_budget, rooms: 0 };
+  const rooms = (plan._flat?.rooms ?? []).map((r) => r.unspent_budget).filter(Boolean);
+  if (!rooms.length) return null;
+  const sum = (k) => rooms.reduce((t, u) => t + (u[k] || 0), 0);
+  const rejected = {};
+  for (const u of rooms) {
+    for (const [cause, n] of Object.entries(u.candidates_rejected || {})) {
+      rejected[cause] = (rejected[cause] || 0) + n;
+    }
+  }
+  return {
+    budget_sar: plan.budget_sar, spent_sar: sum('spent_sar'),
+    unspent_sar: plan.budget_sar - sum('spent_sar'),
+    candidates_in_scope: sum('candidates_in_scope'),
+    candidates_rejected: rejected, rooms: rooms.length,
+  };
+}
+
+/* Zeina frames the brief and routes it. She never picks a product: eazli's own
+ * page says she "doesn't give you a catalog or a quote; she gives you a map".
+ * So this turn is only what was asked for and where it was sent. */
+function zeinaTurn(plan, ctx) {
+  const flat = plan._flat;
+  const asked = flat
+    ? `${esc(flat.label)} — every room in it`
+    : `the ${slotWords(plan.room)} in ${esc(plan.unit)}`;
+  const budget = ctx.tier
+    ? `the ${esc(ctx.tier.label)} tier at ${money(plan.budget_sar)} SAR`
+      + (ctx.tier.note ? ` (${esc(ctx.tier.note)})` : '')
+    : `${money(plan.budget_sar)} SAR`;
+  const style = (ctx.style || []).length
+    ? `styled ${esc(ctx.style.join(' + '))}`
+    : 'with no style preference stated';
+  const slots = plan.placed.length + plan.unfilled.length;
+  return agentTurn('zeina', `You asked for ${asked}, ${style}, on ${budget}.
+    I don't hand you a catalogue or a quote; I hand you a map. So I routed it:
+    the ${slots} slot${slots === 1 ? '' : 's'} ${flat ? 'those rooms’ recipes define'
+      : 'this room’s recipe defines'} went to
+    Noura to lay out, the budget went to Adam to source against, and whatever the
+    two of them agreed on went to fit-auditor, who is allowed to throw it out.`);
+}
+
+/* Noura owns the layout: the slots, the positions, and the engine's verdict on
+ * the arrangement as a whole — including the advisories in validation.notes,
+ * which are hers because they are about the room rather than a product. */
+function nouraTurn(plan) {
+  const flat = plan._flat;
+  const r = plan.room_cm;
+  const doors = (r.doors || []).length;
+  const shape = flat
+    ? `${flat.rooms.length} rooms, each measured off the surveyed floor plan and laid
+       out on its own.`
+    : `The room is <code>${r.width}&times;${r.depth}&nbsp;cm</code> with
+       ${doors} door${doors === 1 ? '' : 's'} on the plan.`;
+  const filled = plan.placed.length + plan.unfilled.length;
+  const tried = plan.placed.reduce((n, i) => n + (i.decision?.positions_tried ?? 0), 0);
+  const first = plan.placed[0];
+  const opener = first
+    // The position is printed as the plan states it, not rounded: a rounded
+    // number is a number the reader cannot find in the data behind the page.
+    ? `First placement: ${slotWords(first.slot_id)} at
+       <code>(${first.x}, ${first.y})&nbsp;cm</code> facing
+       ${esc(first.facing)} — ${esc(first.decision?.placed_because ?? '')}.
+       ${tried} position${tried === 1 ? '' : 's'} were tested in all.`
+    : 'Nothing could be placed here, so there is no layout to describe.';
+  const verdict = plan.validation.status === 'pass'
+    ? `The engine re-checked the finished arrangement and returned
+       <b class="v-pass">pass</b> with nothing listed against it.`
+    : `The engine returned <b class="v-${plan.validation.status}">${plan.validation.status}</b>
+       on the finished arrangement; what it said is fit-auditor's to read out.`;
+  const notes = [...new Set(plan.validation.notes || [])];
+  const advisory = notes.length
+    ? ` It did leave ${notes.length} advisor${notes.length === 1 ? 'y' : 'ies'}:
+        ${notes.map((n) => measure(plan._flat ? n : humaniseWithin(n, plan.placed))).join(' ')}`
+    : '';
+  return agentTurn('noura', `${shape} I filled
+    ${plan.placed.length} of the ${filled} slot${filled === 1 ? '' : 's'} the recipe defines.
+    ${opener} ${verdict}${advisory}`);
+}
+
+/* Adam owns sourcing, and sourcing is per slot: what the pool was, what beat
+ * what, and what the running total had reached by the time he got there. */
+function adamTurn(plan) {
+  if (!plan.placed.length) {
+    return agentTurn('adam', `I sourced nothing: no slot in this plan got as far as
+      a product I could price.`);
+  }
+  let running = 0;
+  const lines = plan.placed.map((i) => {
+    const d = i.decision || {};
+    running += i.price_sar || 0;
+    const over = (d.ranked_above || [])[0];
+    const others = (d.ranked_above || []).length - 1;
+    return `<b>${slotWords(i.slot_id)}</b> — ${d.considered} in the pool, took
+      ${esc(String(i.title).slice(0, 44))} at ${money(i.price_sar)} SAR because
+      ${esc(d.chose_because ?? 'no reason was recorded')}${over
+        ? `, over ${esc(String(over.title).slice(0, 34))} at ${money(over.price_sar || 0)} SAR`
+        + (others > 0 ? ` and ${others} other${others === 1 ? '' : 's'}` : '')
+        : ''}. Running total ${money(running)} SAR.`;
+  });
+  const u = unspentOf(plan);
+  const tail = `That is ${money(plan.total_sar)} SAR against
+    ${money(plan.budget_sar)} SAR${u && u.unspent_sar > 0
+      ? `, leaving ${money(u.unspent_sar)} SAR I could not spend on anything that
+         verified` : ''}.`;
+  return agentTurn('adam', `${lines.join('<br>')}<br>${tail}`);
+}
+
+// Every cause the planner counts is already a phrase. Underscores out, and
+// nothing else: renaming them here would put a second vocabulary on screen.
+const causeWords = (cause) => esc(cause.replace(/_/g, ' '));
+
+/* The auditor is the interesting one, and the only one allowed to be negative.
+ * Every line it prints is a rejection, an empty slot or a failed rule that the
+ * plan already recorded — including the stage each rejection died at. When the
+ * plan holds none of that, it says so rather than manufacturing a worry. */
+function auditorTurn(plan) {
+  const gotchas = [];
+  const seen = new Set();
+  for (const i of plan.placed) {
+    for (const r of i.decision?.rejected || []) {
+      const key = `${r.asin}|${r.why}`;
+      if (seen.has(key)) continue;   // the same listing loses in several rooms
+      seen.add(key);
+      gotchas.push(`<b>${slotWords(i.slot_id)}</b> · ${esc(String(r.title).slice(0, 44))}
+        rejected at the <i>${esc(r.stage)}</i> stage —
+        ${measure(humaniseWithin(r.why, plan.placed))}`);
+    }
+  }
+  for (const s of plan.unfilled) {
+    gotchas.push(`<b>${slotWords(s.slot_id)}</b> · left empty — ${measure(s.reason)}`
+      + ((s.rejected || []).length
+        ? ` ${s.rejected.length} candidate(s) were ruled out before it gave up.` : ''));
+  }
+  for (const reason of plan.validation.reasons || []) {
+    gotchas.push(`<b>engine verdict</b> · ${measure(
+      plan._flat ? reason : humaniseWithin(reason, plan.placed))}`);
+  }
+
+  const u = unspentOf(plan);
+  const tally = Object.entries(u?.candidates_rejected || {}).filter(([, n]) => n > 0);
+  const scope = tally.length
+    ? ` Behind the plan: of ${u.candidates_in_scope} listing(s) in scope for these
+        categories${u.rooms ? `, counted once per room across ${u.rooms} rooms` : ''},
+        ${tally.map(([cause, n]) => `${n} ${causeWords(cause)}`).join(', ')}.`
+    : '';
+  const opening = gotchas.length
+    ? `${gotchas.length} thing${gotchas.length === 1 ? ' in this plan is' : 's in this plan are'}
+       worth seeing before you buy. Each is the engine's own measurement, quoted.`
+    : `Nothing to object to: no candidate was rejected on a measurement, no slot was
+       left empty, and the engine returned ${esc(plan.validation.status)} with no
+       reason against it.`;
+  return agentTurn('auditor', opening + scope, gotchas);
+}
+
+function agentLogHtml(plan, ctx) {
+  return `<p class="muted small">Four agents produced this room. Each speaks only for
+    the decisions the plan records as its own.</p>`
+    + zeinaTurn(plan, ctx) + nouraTurn(plan) + adamTurn(plan) + auditorTurn(plan);
+}
+
+function renderAgentLog(plan) {
+  let host = $('#agent-log');
+  if (!host) {
+    // The markup may or may not carry a host; either way there is exactly one.
+    host = document.createElement('section');
+    host.id = 'agent-log';
+    ($('#issues') ?? $('#items')).before(host);
+  }
+  host.classList.add('agent-log');
+  host.innerHTML = agentLogHtml(plan, { style: state.style, tier: state.tier });
 }
 
 // ---------------------------------------------------------------- swapping
@@ -318,6 +584,124 @@ async function openPicker(slotId, role) {
       applySwap(slotId, pick);
     };
   });
+}
+
+// ---------------------------------------------------------------- the product brief
+/* Everything the plan knows about one item, including the parts it does not
+ * know. It opens in the swap modal rather than a second overlay of its own:
+ * one shell, one close button, one Escape key, and the swap flow untouched.
+ *
+ * The awkward rows are the point. 31 usable listings publish no colour and the
+ * render draws them hatched; if the brief filled that gap in with a plausible
+ * word, the picture and the page beside it would disagree and only one of them
+ * would be honest.
+ */
+
+const DIMS_MEANING = {
+  stated: 'the listing labelled its axes, so this is what the seller published',
+  parsed: 'read off an unlabelled field — the numbers are usually right, but which '
+        + 'one is the depth is a guess',
+  conflicted: 'two fields on the listing contradict each other, so the size is not believed',
+  missing: 'the listing publishes no dimensions at all',
+};
+
+const SOURCE_MEANING = {
+  attrs: "from the listing's own structured attribute field",
+  title: 'read out of the listing title, not a structured field',
+  conflicted: 'two fields on the listing state different values, so neither is used',
+  missing: 'not published',
+};
+
+/* Raw parser flags in front of a shopper are schema, not information.
+ * test_studio.py derives the keys from the capture, so a new flag fails a test
+ * rather than reaching a customer as `assumed_depth`. */
+const FLAG_MEANING = {
+  no_published_dimensions: 'The listing publishes no dimensions, so nothing about how it '
+    + 'fits can be claimed.',
+  implausible_price: 'The price is far outside the range for this category and no volume '
+    + 'of reviews vouches for it.',
+  implausible_for_category: 'The published dimensions are outside a plausible range for '
+    + 'this kind of furniture — most often a mislabelled axis.',
+  colour_conflict: 'Two colour fields on the listing disagree, so no colour is claimed.',
+  assumed_depth: 'Only two dimensions were published. The depth is an assumption, marked '
+    + 'here rather than buried.',
+  category_mismatch: 'The search returned it under this category, but the title parses as '
+    + 'something else.',
+  dimension_conflict: 'Two dimension fields on the listing contradict each other.',
+  unclassified: 'No category pattern matched the title, so it was kept under the category '
+    + 'the search returned it from.',
+};
+
+function briefHtml(i, plan) {
+  const rows = [];
+  const row = (label, value) =>
+    rows.push(`<div class="d-row"><span>${label}</span><div>${value}</div></div>`);
+
+  row('listing', `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.title)}</a>
+    <br><em>${esc(i.asin)}</em> on amazon.sa · <b>${money(i.price_sar)} SAR</b>`);
+
+  row('size', `<code>${i.dims_cm.w}&times;${i.dims_cm.d}&times;${i.dims_cm.h}&nbsp;cm</code>
+    · <b>${esc(i.dims_confidence)}</b><br>
+    ${esc(DIMS_MEANING[i.dims_confidence] ?? 'how this was obtained is not recorded')}`);
+
+  // The swatch is the same one the panel and the viewport use, so the three
+  // cannot drift apart on what "unknown" looks like.
+  row('colour', (i.colour_hex
+      ? `${swatch(i, INLINE_DOT)} <code>${esc(i.colour_hex)}</code>`
+      : `${swatch(i, INLINE_DOT)} <b>not published</b>`)
+    + `<br>${esc(SOURCE_MEANING[i.colour_source] ?? (i.colour_hex
+        ? 'published by the listing' : 'the listing states none'))}`
+    + (i.colour_hex ? '' : '. The render draws it in flat slate with a hatch for '
+      + 'exactly this reason — nothing here invents one.'));
+
+  row('material', (i.material ? `<b>${esc(i.material)}</b>` : '<b>not published</b>')
+    + `<br>${esc(SOURCE_MEANING[i.material_source] ?? (i.material
+        ? 'published by the listing' : 'the listing states none'))}`);
+
+  if (i.rating !== undefined || i.reviews !== undefined) {
+    row('reviews', i.rating
+      ? `${i.rating}★ from ${i.reviews} review${i.reviews === 1 ? '' : 's'}`
+      : 'no reviews');
+  }
+
+  if (Array.isArray(i.flags)) {
+    row('flagged', i.flags.length
+      ? i.flags.map((f) => `<i>${esc(f.replace(/_/g, ' '))}</i> — ${esc(FLAG_MEANING[f]
+          ?? 'a parser flag with no plain-language note yet')}`).join('<br>')
+      : 'nothing. This listing tripped none of the parser’s checks.');
+  }
+
+  const a = i.access || {};
+  const legs = a.reasons || [];
+  // On a failure the only line that matters is the segment that failed; on a
+  // pass, the legs that need a human to do something.
+  const failed = legs.filter((r) => /cannot|does not fit/i.test(r));
+  const notable = legs.filter((r) => /TIGHT|on its side|on end|swing/i.test(r));
+  const shown = failed.length ? failed : notable;
+  row('delivery', `<b>${esc(a.status ?? 'unverified')}</b>${a.measured_using
+      ? ` · measured ${esc(a.measured_using)}` : ''}<br>`
+    + (shown.length
+      ? shown.map((r) => measure(humaniseWithin(r, plan?.placed))).join('<br>')
+      : legs.length ? `all ${legs.length} legs of the route clear.`
+      : 'no route was checked, so nothing is claimed.'));
+
+  const d = i.decision || {};
+  row('why this one', `${esc(d.chose_because ?? 'no reason recorded')} ·
+    ${d.considered ?? 0} candidate(s) considered`
+    + ((d.ranked_above || []).length
+      ? `<br>ranked above:<br>${d.ranked_above.map((r) =>
+          `${esc(String(r.title).slice(0, 50))} <em>${money(r.price_sar || 0)} SAR</em>`)
+        .join('<br>')}` : ''));
+
+  return `<div class="detail" style="margin:12px 14px">${rows.join('')}</div>`;
+}
+
+function openBrief(slotId) {
+  const item = state.plan?.placed.find((p) => p.slot_id === slotId);
+  if (!item) return;
+  $('#picker-title').textContent = slotId.replace(/_/g, ' ');
+  $('#picker-list').innerHTML = briefHtml(item, state.plan);
+  $('#picker').hidden = false;
 }
 
 async function applySwap(slotId, pick) {
@@ -630,3 +1014,13 @@ function finishRow(s) {
                 “${esc(s.search_query)}”</a></div>`}
     </div>`;
 }
+
+/* Exported only so the tests can run them.
+ *
+ * The agent log and the brief are the two places this page writes prose, and
+ * prose is the one thing a source-reading test cannot judge. Both are pure
+ * functions of the plan precisely so a test can run them over real exported
+ * plans in node and check that every measurement they print is in the JSON
+ * they printed it from. Nothing in the page imports these.
+ */
+export { agentLogHtml, briefHtml };

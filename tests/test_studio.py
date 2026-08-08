@@ -265,9 +265,36 @@ def test_studio_page_is_served(client):
 
 def test_three_js_is_vendored_locally_not_from_a_cdn(client):
     """The page must work with no network. A CDN import would break that and
-    would not be caught by any other test."""
+    would not be caught by any other test.
+
+    This used to read `"cdn" not in html.lower()`, which stopped being the
+    right question once the header started hotlinking the three eazli agent
+    avatars from cdn.eazli.com. Those are decoration: `alt=""`, lazy, low
+    priority, and backed by a CSS monogram, so losing them costs the page
+    nothing. Code is the thing that may not come from someone else's host, so
+    that is what is asserted — plus an allow-list, so the next off-host URL
+    still has to be argued for rather than merely spelled without a `cdn.`
+    """
+    import re
+
     html = client.get("/studio").text
-    assert "unpkg" not in html and "cdn" not in html.lower()
+
+    # Anything the browser executes or applies: script sources, stylesheets,
+    # and the module specifiers the import map resolves.
+    code = re.findall(r'<script[^>]*\bsrc="([^"]+)"', html)
+    code += re.findall(r'<link[^>]*\brel="stylesheet"[^>]*\bhref="([^"]+)"', html)
+    code += re.findall(r':\s*"([^"]+\.js)"', html)
+    assert code, "expected the page to load some code at all"
+    for url in code:
+        assert url.startswith("/static/"), f"code loaded from off-host: {url}"
+
+    assert "unpkg" not in html
+    remote = set(re.findall(r'(?:src|href)="(https?://[^"]+)"', html))
+    assert remote == {
+        f"https://cdn.eazli.com/agents/{who}_card_avatar.png"
+        for who in ("zeina", "adam", "noura")
+    }, f"unexpected off-host reference: {remote}"
+
     assert client.get("/static/vendor/three.module.js").status_code == 200
 
 
@@ -599,3 +626,313 @@ def test_the_viewport_is_optional_scenery():
 
     js = Path("app/static/studio.js").read_text(encoding="utf-8")
     assert ".catch(" in js and "viewport-fallback" in js
+
+
+# --------------------------------------------------------------------------
+# the agent-reasoning log, and the brief behind each product
+#
+# These two features render prose, and prose is where a system that is careful
+# everywhere else starts lying: a sentence template will happily fire "a
+# considered choice for this space" over an empty field. So most of what is
+# asserted here is what the copy may NOT do — and the strongest of them runs
+# the builders in node over real exported plans and re-finds every measurement
+# they print in the plan they printed it from.
+# --------------------------------------------------------------------------
+
+def _studio_js() -> str:
+    from pathlib import Path
+
+    return Path("app/static/studio.js").read_text(encoding="utf-8")
+
+
+def _function_source(js: str, name: str) -> str:
+    """The body of one top-level `function name(...) { ... }`, by brace count.
+
+    Crude, and deliberately so: it lets a test say "Zeina's turn never mentions
+    a price" about that function and nothing else."""
+    start = js.index(f"function {name}(")
+    depth, i = 0, js.index("{", start)
+    for j in range(i, len(js)):
+        depth += (js[j] == "{") - (js[j] == "}")
+        if depth == 0:
+            return js[start:j + 1]
+    raise AssertionError(f"{name} is not brace-balanced")
+
+
+def test_the_log_attributes_every_turn_to_the_agent_that_owns_the_decision():
+    """Four turns, four agents, and the three eazli personas wear the avatars
+    eazli publishes for them. An unattributed wall of reasoning is just the
+    same data dump with a nicer font."""
+    js = _studio_js()
+    for key, avatar, role in (
+        ("zeina", "zeina_card_avatar.png", "AI Guide"),
+        ("noura", "noura_card_avatar.png", "AI Design Agent"),
+        ("adam", "adam_card_avatar.png", "AI Sales Advisor"),
+    ):
+        assert f"'{avatar}'" in js or f'"{avatar}"' in js, f"{key} has no avatar"
+        assert role in js, f"{key}'s role is not stated"
+    assert "https://cdn.eazli.com/agents/" in js
+    # fit-auditor is this project's addition, not an eazli persona, so there is
+    # no card avatar to hotlink and it must not pretend there is one.
+    assert "fit-auditor" in js
+    assert "fit_auditor_card_avatar" not in js and "auditor_card_avatar" not in js
+
+
+def test_a_cdn_outage_shows_a_monogram_rather_than_a_broken_avatar():
+    """The avatars are hotlinked off a CDN this build does not control."""
+    js = _studio_js()
+    assert 'loading="lazy"' in js, "avatars must not compete with first paint"
+    assert "onerror=" in js, "a 404 would otherwise render as a broken image"
+    # The replacement is a data: URI, so the fallback cannot fail the same way.
+    assert "this.onerror=null" in js, "a failing fallback would loop"
+    assert "data:image/svg+xml" in js
+
+
+def test_the_log_uses_the_class_names_the_stylesheet_defines():
+    """The stylesheet is written by another pair of hands. Inventing a parallel
+    set of names here produces an unstyled wall of text."""
+    import re
+
+    js = _studio_js()
+    for cls in ("agent-log", "agent-turn", "agent-head", "agent-name",
+                "agent-role", "agent-says", "agent-gotcha"):
+        assert cls in js, f"the log never uses .{cls}"
+    # The per-agent modifier is the AGENTS key, so a turn can only be styled
+    # per agent if those keys are the four the stylesheet expects.
+    keys = re.search(r"const AGENTS = \{(.*?)\n\};", js, re.S).group(1)
+    for modifier in ("zeina", "noura", "adam", "auditor"):
+        assert re.search(rf"^\s*{modifier}:", keys, re.M), f".agent-turn.{modifier} is unreachable"
+
+
+def test_zeina_never_names_a_product():
+    """eazli's own copy: she "doesn't give you a catalog or a quote; she gives
+    you a map". An orientation agent that starts recommending sofas is the
+    scope violation the whole persona split exists to prevent."""
+    src = _function_source(_studio_js(), "zeinaTurn")
+    for forbidden in ("title", "asin", "price_sar", "chose_because",
+                      "ranked_above", "decision", "dims_cm"):
+        assert forbidden not in src, f"Zeina reaches into {forbidden}"
+
+
+def test_the_auditor_reads_from_the_rejection_record_and_nothing_else():
+    """Its whole value is that every gotcha is traceable to a field. A hand-
+    written "watch out for tight corridors" would be indistinguishable on
+    screen and worthless."""
+    src = _function_source(_studio_js(), "auditorTurn")
+    for field in ("rejected", "stage", "why", "unfilled",
+                  "validation.reasons", "candidates_rejected"):
+        assert field in src, f"the auditor never looks at {field}"
+    # And when the plan holds none of it, it says so instead of inventing.
+    assert "Nothing to object to" in src
+    assert "agent-gotcha" in _studio_js()
+
+
+def test_a_gotcha_puts_its_measurement_in_code():
+    """A number buried in a sentence is prose; a number in `<code>` is a
+    measurement the reader can go and check against their own tape."""
+    import re
+
+    js = _studio_js()
+    src = re.search(r"const measure = .*?\n\n", js, re.S).group(0)
+    assert "<code>" in src
+    assert "cm" in src and "SAR" in src
+    # Escaped before markup is inserted, never after.
+    assert "esc(" in src
+
+
+def test_every_flag_the_catalogue_can_actually_emit_is_explained_in_words():
+    """`assumed_depth` means nothing to a shopper. The glossary is derived from
+    the capture rather than from memory, so a new parser flag fails here rather
+    than reaching a customer as a raw schema token."""
+    from app.catalog import parse_capture
+
+    js = _studio_js()
+    emitted = {f for p in parse_capture() for f in p.flags}
+    # Sanity: the six the brief promises to explain are among them.
+    assert {"no_published_dimensions", "implausible_price", "implausible_for_category",
+            "colour_conflict", "assumed_depth", "category_mismatch"} <= emitted
+    for flag in sorted(emitted):
+        assert f"{flag}:" in js, f"{flag} would reach the reader as a schema token"
+
+
+def test_the_brief_reuses_the_picker_shell_rather_than_opening_a_second_modal():
+    """Two modals is two sets of close handlers, two escape keys and two
+    stacking contexts. The swap flow keeps working because it is the same
+    element."""
+    js = _studio_js()
+    html = __import__("pathlib").Path("app/static/index.html").read_text(encoding="utf-8")
+    src = _function_source(js, "openBrief")
+    assert "#picker-list" in src and "#picker-title" in src
+    assert "$('#picker').hidden = false" in src
+    # No second overlay was introduced in the markup.
+    assert html.count('id="picker"') == 1
+    assert "#brief" not in js, "the brief must not get its own overlay"
+    # The swap flow still fills the same shell.
+    assert "#picker-list" in _function_source(js, "openPicker")
+
+
+def test_opening_a_brief_does_not_steal_the_row_buttons():
+    """The row already carries "Why this?", "Swap…" and the hover-highlight for
+    the 3D view. A click handler on the row swallows all three unless it stands
+    aside for them."""
+    js = _studio_js()
+    assert ".actions" in js and "closest(" in js, "the row click must bail on its own buttons"
+    row = js[js.index("querySelectorAll('.item[data-slot]')"):]
+    row = row[:row.index("\n  }")] if "\n  }" in row else row
+    assert "onmouseenter" in row and "highlight(" in row, "hover-highlight was dropped"
+    assert "openBrief(" in row
+
+
+def test_the_brief_says_not_published_in_words():
+    """31 usable listings publish no colour and the render draws them as
+    unknown on purpose. A brief that quietly omitted the row would let the
+    reader assume the render was being decorative."""
+    src = _function_source(_studio_js(), "briefHtml")
+    assert "not published" in src
+    for expected in ("asin", "price_sar", "i.url", "dims_confidence",
+                     "colour_source", "material_source", "flags", "rating",
+                     "access", "chose_because", "considered", "ranked_above"):
+        assert expected in src, f"the brief never shows {expected}"
+    assert 'target="_blank"' in src, "the listing link must not lose the studio"
+
+
+# ---- the same builders, run over real plans -------------------------------
+#
+# The copy is a pure function of the plan on purpose. Anything else can only be
+# tested by reading it, and reading it is exactly how a fabricated sentence
+# survives review.
+
+DRIVER = """
+import { readFileSync } from 'node:fs';
+// One proxy stands in for the whole DOM: studio.js only touches it from
+// inside functions this harness never calls.
+const stub = new Proxy(function () {}, {
+  get: (_t, k) => (k === 'then' ? undefined : stub),
+  set: () => true,
+  apply: () => stub,
+});
+globalThis.document = stub;
+globalThis.addEventListener = () => {};
+const { agentLogHtml, briefHtml } = await import('./studio.mjs');
+const plan = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const ctx = JSON.parse(process.argv[3]);
+process.stdout.write(JSON.stringify({
+  log: agentLogHtml(plan, ctx),
+  briefs: plan.placed.map((i) => briefHtml(i, plan)),
+}));
+"""
+
+
+@pytest.fixture(scope="module")
+def run_studio(tmp_path_factory):
+    """Load studio.js in node with a stubbed DOM and hand back its builders."""
+    import json
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+
+    src = Path("app/static/studio.js").read_text(encoding="utf-8")
+    assert "\nboot();" in src, "boot() moved — this harness needs updating"
+    src = src.replace("\nboot();", "\n/* boot() is not called under test */")
+    src = src.replace("'./palette.js'",
+                      f"'{Path('app/static/palette.js').resolve().as_uri()}'")
+    d = tmp_path_factory.mktemp("studio")
+    (d / "studio.mjs").write_text(src, encoding="utf-8")
+    (d / "run.mjs").write_text(DRIVER, encoding="utf-8")
+
+    def run(plan_path, style=(), tier=None):
+        out = subprocess.run(
+            [node, str(d / "run.mjs"), str(plan_path),
+             json.dumps({"style": list(style), "tier": tier})],
+            capture_output=True, text=True)
+        assert out.returncode == 0, out.stderr
+        return json.loads(out.stdout)
+
+    return run
+
+
+def _exported_plans(*names):
+    from pathlib import Path
+
+    paths = [Path("site/data/plans") / n for n in names]
+    if not all(p.exists() for p in paths):
+        pytest.skip("no static build in site/ — run `make site`")
+    return paths
+
+
+def test_the_log_prints_no_measurement_the_plan_does_not_contain(run_studio):
+    """The point of the whole feature. Every measurement the auditor puts in
+    front of a reader has to be findable, verbatim, in the JSON it came from."""
+    import re
+
+    for path in _exported_plans(
+        "unit01__living_dining__warm-minimal__standard.json",
+        "unit01__bedroom__modern-luxury__premium.json",
+        "unit05__living_dining__warm-minimal__starter.json",
+    ):
+        raw = path.read_text(encoding="utf-8")
+        log = run_studio(path)["log"]
+        for gotcha in re.findall(r'<div class="agent-gotcha">(.*?)</div>', log, re.S):
+            for code in re.findall(r"<code>(.*?)</code>", gotcha):
+                assert code in raw, f"{code!r} is not in {path.name}"
+        # Everywhere else in the log, a number inside <code> is still a number
+        # the plan states.
+        for code in re.findall(r"<code>(.*?)</code>", log):
+            for number in re.findall(r"\d+(?:\.\d+)?", code):
+                assert number in raw, f"{number!r} was not read off {path.name}"
+
+
+def test_an_auditor_with_nothing_to_object_to_says_so(run_studio):
+    """The failure mode is an auditor that always finds something, because an
+    auditor that always finds something is not reading the plan."""
+    import json
+    from pathlib import Path
+
+    quiet = next(
+        (p for p in sorted(Path("site/data/plans").glob("*.json"))
+         if (d := json.loads(p.read_text()))
+         and not d["unfilled"] and not d["validation"]["reasons"]
+         and not any(i["decision"]["rejected"] for i in d["placed"])),
+        None)
+    if quiet is None:
+        pytest.skip("no static build, or every exported plan has a gotcha")
+
+    log = run_studio(quiet)["log"]
+    assert "Nothing to object to" in log
+    assert 'class="agent-gotcha"' not in log, f"{quiet.name} has nothing to flag"
+    # It still reports the tally, which is a fact about the catalogue rather
+    # than a complaint about this plan.
+    assert "in scope" in log
+
+
+def test_the_log_differs_between_configurations(run_studio):
+    """Four near-identical paragraphs across every room would say the copy is
+    boilerplate with the numbers swapped in."""
+    a, b = _exported_plans("unit01__living_dining__warm-minimal__standard.json",
+                           "unit01__bedroom__modern-luxury__premium.json")
+    assert run_studio(a)["log"] != run_studio(b)["log"]
+
+
+def test_the_brief_agrees_with_the_render_about_an_unpublished_colour(run_studio):
+    """The render draws these in hatched slate. A brief that named a colour
+    would make one of the two a liar."""
+    import json
+
+    path, = _exported_plans("unit01__living_dining__warm-minimal__standard.json")
+    plan = json.loads(path.read_text())
+    briefs = run_studio(path)["briefs"]
+    checked = 0
+    for item, brief in zip(plan["placed"], briefs):
+        assert item["asin"] in brief
+        assert item["url"] in brief, "no link to the listing"
+        assert item["dims_confidence"] in brief
+        if item["colour_hex"] is None:
+            assert "not published" in brief
+            checked += 1
+        else:
+            assert item["colour_hex"] in brief
+    assert checked, "this plan was chosen because something in it has no colour"
