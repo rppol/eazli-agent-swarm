@@ -73,7 +73,7 @@ The AI Agent policy contains this, under Noura's Fitment clause:
 
 Meanwhile the vendor page sells:
 
-> "**27%–43%** Reduction in returns driven by better **fit**, visualization & expectations."
+> "**27%–43%** Reduction in returns driven by better **fit**, visualization and expectations."
 
 The same capability is disclaimed to the customer and monetised to the vendor. That is
 not hypocrisy — it is a normal position for a pre-launch company that knows a problem is
@@ -109,6 +109,9 @@ what vendor-supplied feeds will look like — and parsed them:
 | Wrong product category entirely | 10 |
 | **Usable for a confirmed fit claim** | **57 / 75 (76%)** |
 
+The two 57s are a coincidence, not the same set: eight `stated` items are unusable
+(wrong category or impossible size) and eight `parsed` items are usable.
+
 The failure modes are specific and worth naming, because they don't look like errors:
 
 - **Unit drift.** `1.05D x 2.2W x 0.83H Meters` and `104.5D x 170W x 82.5H centimeters`
@@ -132,9 +135,9 @@ The three published agents are all aligned with the customer proceeding. Zeina o
 Noura designs, Adam sells. Each is individually well scoped, and none of them is
 structurally motivated to reject the plan.
 
-But eazli's own disclaimer says outputs "may be incomplete, inaccurate, or contain
-incorrect assumptions ('hallucinations')" and singles out **measurements** as the risk
-area. If measurement error is the named failure mode, an agent whose only job is to
+But eazli's policy says outputs "may be incomplete, inaccurate, or contain incorrect
+assumptions ('hallucinations')", and both the policy's Fitment clause and the FAQ
+name **measurements** first among the things a user must verify. If measurement error is the named failure mode, an agent whose only job is to
 re-verify measurements adversarially is missing from the roster.
 
 This is not theoretical. In my own build, the layout validator silently skipped two of
@@ -202,7 +205,7 @@ answer is a feature — it's the behaviour that actually reduces returns.
 **Rules that don't run don't pass.** After the validator bug, an undeterminable item role
 makes the whole layout `unverified` rather than `pass`. Silence is not success.
 
-**Evaluation is split by decidability.** 26 ground-truth scenarios run in CI with no
+**Evaluation is split by decidability.** 32 ground-truth scenarios run in CI with no
 model involved — geometry, catalogue provenance, plan limits. An LLM-as-judge grades only
 what is genuinely qualitative: groundedness, scope discipline, calibrated honesty,
 usefulness, failure handling, and whether the ReAct trace was load-bearing or written
@@ -215,8 +218,9 @@ you.
 
 - **Arabic / RTL.** Named in §3.5, not built.
 - **Real vendor integration.** The catalogue is amazon.sa as a stand-in for vendor feeds.
-- **Visualisation.** Noura outputs validated slot geometry, not renders. eazli's Noura
-  produces images; mine produces the constraint set an image would have to satisfy.
+- **Photoreal visualisation.** The Noura *agent* outputs validated slot geometry;
+  `viz/render.py` draws it deterministically as a plan, an isometric view and an OBJ
+  model. Neither produces the photoreal render eazli's Noura does.
 - **Checkout.** Deliberately — their policy forbids agents completing purchases.
 - **Stairs and multi-floor routes.** The engine models lifts, corridors, turns and doors.
 - **The corner-turn model assumes the item stays horizontal.** Movers tilt. So a turn

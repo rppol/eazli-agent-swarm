@@ -485,8 +485,11 @@ def build() -> dict:
         Item("B0FR3WVLTS", "sofa 190cm", "sofa", 5, 205, 190, 85, 85, "N"),
         Item("B0BK8QZ8RR", "dining table", "dining_table", 98, 386, 120, 70, 76, "S"),
         Item("B0DRTV3XDT", "floor lamp", "floor_lamp", 200, 215, 30, 30, 155, "N"),
-        Item("coffee_table", "coffee table", "coffee_table", 45, 112, 110, 50, 45, "N",
-             filled=False, note="all 4 too deep (66-84cm vs 53cm)"),
+        # Placed where a brute-force search over the room found it fits: 50cm
+        # clear of the sofa front and in reach. Adam reported this slot
+        # unfillable against Noura's 110x50 budget, which was tighter than the
+        # room required — the gap was in the layout, not the catalogue.
+        Item("B0H8PQ9KDJ", "coffee table", "coffee_table", 120, 75, 80, 80, 30, "N"),
         Item("media_console", "TV console", "tv_console", 25, 0, 150, 35, 55, "S",
              filled=False, note="all 5 are 40cm deep vs 35cm"),
         Item("chairs_n", "dining chairs", "dining_chairs_pair", 108, 334, 45, 50, 95, "S",

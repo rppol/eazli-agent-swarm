@@ -1,8 +1,9 @@
 """Deterministic spatial reasoning. No model ever decides whether something fits.
 
-eazli's own AI Agent Disclaimers page warns that agent outputs "may be incomplete,
-inaccurate, or contain incorrect assumptions" and tells users to verify
-"especially for measurements". Their Fitment clause goes further and disclaims
+eazli's AI Agent Disclaimers page warns that agent outputs "may be incomplete,
+inaccurate, or contain incorrect assumptions", and their FAQ tells users to verify
+"especially for measurements, installation, safety, or compliance". The policy's
+Fitment clause goes further and disclaims
 liability for whether an item "can be delivered, moved in, installed, or used as
 intended" through "doorways, hallways, stairs, and elevators".
 
@@ -19,7 +20,7 @@ Units are centimetres throughout.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import permutations
 from typing import Literal, Sequence
 
@@ -50,11 +51,29 @@ RULES: dict[str, dict] = {
         "text": "An inward-swinging door sweeps a quarter-disc equal to its leaf width. "
                 "Nothing may occupy that arc.",
     },
+    "pull_out": {
+        "value_cm": 75,
+        "text": "A dining chair needs about 75cm behind it to push back and stand "
+                "up. In front of it is the table, not a walkway.",
+    },
+    "coffee_table_reach": {
+        "value_cm": 100,
+        "text": "A coffee table has to be reachable from the seating it serves — "
+                "within about a metre, and in front of it rather than behind. A "
+                "table that satisfies every clearance but sits out of reach is "
+                "legal and useless.",
+    },
 }
 
 WALKWAY_PRIMARY_CM = RULES["walkway_primary"]["value_cm"]
 WALKWAY_SECONDARY_CM = RULES["walkway_secondary"]["value_cm"]
 SOFA_TO_TABLE_MIN_CM = RULES["sofa_to_coffee_table"]["value_cm"]
+COFFEE_TABLE_REACH_CM = RULES["coffee_table_reach"]["value_cm"]
+
+# Below this, a "pass" is not a comfortable one. Stated opening widths are
+# nominal: hinges, door stops and the hands carrying the item all eat into
+# them, so a 1cm margin on paper is no margin in a stairwell.
+TIGHT_MARGIN_CM = 3.0
 
 
 # --------------------------------------------------------------------------
@@ -116,6 +135,7 @@ class Room:
 
 
 SEATING_ROLES = {"sofa", "armchair", "chair", "seat", "dining_chair", "dining_chairs_pair"}
+DINING_CHAIR_ROLES = {"dining_chair", "dining_chairs_pair"}
 TABLE_ROLES = {"coffee_table", "dining_table", "table", "side_table"}
 WALL_ROLES = {"bed", "wardrobe", "bookshelf", "tv_console", "floor_lamp", "rug", "other"}
 KNOWN_ROLES = SEATING_ROLES | TABLE_ROLES | WALL_ROLES
@@ -133,6 +153,7 @@ KNOWN_ROLES = SEATING_ROLES | TABLE_ROLES | WALL_ROLES
 FRONT_CLEARANCE_BY_ROLE: dict[str, float] = {
     **{r: WALKWAY_PRIMARY_CM for r in SEATING_ROLES},
     **{r: WALKWAY_SECONDARY_CM for r in TABLE_ROLES},
+    **{r: WALKWAY_SECONDARY_CM for r in DINING_CHAIR_ROLES},
     **{r: 0.0 for r in WALL_ROLES},
 }
 
@@ -278,6 +299,18 @@ def check_fit(
             f"{placement.item_id} is {placement.dims.h:.0f}cm tall but the ceiling "
             f"is {room.height_cm:.0f}cm."
         )
+    else:
+        # The classic wardrobe failure: it stands up fine, but you cannot rotate
+        # it from flat to upright because the diagonal exceeds the ceiling.
+        # Assembled tall items arrive lying down and have to be tilted in place.
+        h, d = placement.dims.h or 0, placement.dims.d or 0
+        diagonal = math.hypot(h, d)
+        if h > room.height_cm * 0.75 and diagonal > room.height_cm:
+            reasons.append(
+                f"{placement.item_id} cannot be tilted upright: its {h:.0f}x{d:.0f}cm "
+                f"profile needs {diagonal:.0f}cm of diagonal swing but the ceiling is "
+                f"{room.height_cm:.0f}cm. It has to be assembled standing, or arrive flat-packed."
+            )
 
     for door in room.doors:
         if door.swing != "in":
@@ -293,13 +326,28 @@ def check_fit(
             reasons.append(f"{placement.item_id} overlaps fixed fixture {fixture.item_id}.")
 
     if front_clearance_cm:
-        gap, blocker = _front_gap(placement, room, others)
+        # A dining chair's clear space is BEHIND it — in front is the table it
+        # is pulled up to. Measuring in front demanded the chair sit away from
+        # its own table.
+        role = placement.resolved_role()
+        pull_out = role in DINING_CHAIR_ROLES
+        probe = _flip(placement) if pull_out else placement
+
+        gap, blocker = _front_gap(probe, room, others)
         if gap < front_clearance_cm:
-            against = f"{blocker}" if blocker else "the wall"
+            against = blocker if blocker else "the wall"
+            # The rationale has to match the number quoted, or the sentence
+            # contradicts itself — and agents are told to quote these verbatim.
+            rule = (
+                "pull_out" if pull_out
+                else "walkway_primary" if front_clearance_cm >= WALKWAY_PRIMARY_CM
+                else "walkway_secondary"
+            )
+            where = "to push back behind" if pull_out else "of walkway in front of"
             reasons.append(
-                f"Only {gap:.0f}cm of walkway in front of {placement.item_id} "
+                f"Only {gap:.0f}cm {where} {placement.item_id} "
                 f"(blocked by {against}); {front_clearance_cm:.0f}cm needed. "
-                f"{RULES['walkway_primary']['text']}"
+                f"{RULES[rule]['text']}"
             )
 
     if role_unknown and not reasons:
@@ -379,10 +427,20 @@ def _front_gap(
     return gap, blocker
 
 
+# Pairs that belong next to each other. Neither obstructs the other's
+# clearance, and a chair may overlap the table it tucks under.
+COMPANION_PAIRS = [
+    {"sofa", "coffee_table"},
+    {"armchair", "coffee_table"},
+    *({"dining_table", r} for r in DINING_CHAIR_ROLES),
+]
+
+
 def _is_companion(a: Placement, b: Placement) -> bool:
-    """A coffee table belongs in front of a sofa; it is not an obstruction."""
+    """A coffee table belongs in front of a sofa; a dining chair belongs at its
+    table. Treating either as an obstruction rejects the correct arrangement."""
     roles = {a.resolved_role(), b.resolved_role()}
-    return roles == {"sofa", "coffee_table"} or roles == {"armchair", "coffee_table"}
+    return any(roles == pair for pair in COMPANION_PAIRS)
 
 
 # --------------------------------------------------------------------------
@@ -416,6 +474,11 @@ def validate_layout(room: Room, placements: Sequence[Placement]) -> Verdict:
         for b in known[i + 1:]:
             fa, fb = a.footprint(), b.footprint()
             if _overlaps(fa, fb):
+                # A dining chair tucks under its table, so their footprints
+                # overlap by design. Reporting that as a collision rejected
+                # every realistically-placed dining set.
+                if _is_companion(a, b) and {a.resolved_role(), b.resolved_role()} & DINING_CHAIR_ROLES:
+                    continue
                 reasons.append(f"{a.item_id} and {b.item_id} overlap.")
                 statuses.append("fail")
                 continue
@@ -427,7 +490,44 @@ def validate_layout(room: Room, placements: Sequence[Placement]) -> Verdict:
                 )
                 statuses.append("fail")
 
+    # Functional adjacency, not just clearance. Every rule above answers "is
+    # there room for this?"; none answers "does this arrangement work?" A
+    # brute-force position search found coffee tables that satisfied every
+    # clearance while sitting behind the sofa — legal, and useless.
+    seating = [p for p in known if p.resolved_role() in {"sofa", "armchair"}]
+    for table in (p for p in known if p.resolved_role() == "coffee_table"):
+        if not seating:
+            continue
+        distances = [_gap_between(table.footprint(), s.footprint()) for s in seating]
+        nearest = min(distances)
+        in_front = any(_is_in_front(s, table) for s in seating)
+        if nearest > COFFEE_TABLE_REACH_CM or not in_front:
+            where = "behind the seating" if not in_front else f"{nearest:.0f}cm away"
+            reasons.append(
+                f"{table.item_id} is out of reach of the seating ({where}). "
+                f"{RULES['coffee_table_reach']['text']}"
+            )
+            statuses.append("fail")
+
     return Verdict(status=_combine(statuses), reasons=reasons)
+
+
+def _flip(placement: Placement) -> Placement:
+    """The same placement looking the other way, for measuring behind it."""
+    opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}[placement.facing]
+    return replace(placement, facing=opposite)
+
+
+def _is_in_front(seat: Placement, other: Placement) -> bool:
+    """Is `other` on the side the seat actually faces?"""
+    sx0, sy0, sx1, sy1 = seat.footprint()
+    ox0, oy0, ox1, oy1 = other.footprint()
+    return {
+        "S": oy0 >= sy1,
+        "N": oy1 <= sy0,
+        "E": ox0 >= sx1,
+        "W": ox1 <= sx0,
+    }[seat.facing]
 
 
 def _is_sofa_table_pair(a: Placement, b: Placement) -> bool:
@@ -502,10 +602,17 @@ def _fits_through_opening(dims: Dims, seg: PathSegment) -> tuple[bool, str]:
     for across, up, along in candidates:
         if across <= seg.width_cm and up <= seg.height_cm:
             tipped = up != h
+            margin = min(seg.width_cm - across, seg.height_cm - up)
             note = (
                 f"{seg.name} ({seg.kind} {seg.width_cm:.0f}x{seg.height_cm:.0f}cm): "
                 f"clears at {across:.0f}x{up:.0f}cm"
-                + (" — must be carried on its side." if tipped else ".")
+                + (" — must be carried on its side" if tipped else "")
+                + (
+                    f" — TIGHT, only {margin:.0f}cm to spare. A stated opening loses "
+                    f"width to hinges, door stops and the hands carrying the item; "
+                    f"measure the clear opening before ordering."
+                    if margin < TIGHT_MARGIN_CM else "."
+                )
             )
             return True, note
     return False, (
@@ -519,7 +626,11 @@ def _fits_in_box(dims: Dims, seg: PathSegment) -> tuple[bool, str]:
     w, d, h = dims.triple
     for a, b, c in permutations((w, d, h)):
         if a <= seg.width_cm and b <= depth and c <= seg.height_cm:
-            return True, f"{seg.name} (lift car {seg.width_cm:.0f}x{depth:.0f}x{seg.height_cm:.0f}cm): fits."
+            margin = min(seg.width_cm - a, depth - b, seg.height_cm - c)
+            tight = (f" TIGHT, only {margin:.0f}cm to spare."
+                     if margin < TIGHT_MARGIN_CM else "")
+            return True, (f"{seg.name} (lift car {seg.width_cm:.0f}x{depth:.0f}x"
+                          f"{seg.height_cm:.0f}cm): fits.{tight}")
     return False, (
         f"{seg.name} (lift car {seg.width_cm:.0f}x{depth:.0f}x{seg.height_cm:.0f}cm): item "
         f"{w:.0f}x{d:.0f}x{h:.0f}cm does not fit the car in any orientation."

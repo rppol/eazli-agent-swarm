@@ -19,3 +19,7 @@ newmtl floor_lamp
 Kd 0.682 0.243 0.788
 Ks 0.05 0.05 0.05
 
+newmtl coffee_table
+Kd 0.071 0.722 0.525
+Ks 0.05 0.05 0.05
+

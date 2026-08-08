@@ -118,3 +118,14 @@ def test_every_referenced_material_is_defined():
     used = set(re.findall(r"^usemtl (\S+)", obj, re.M))
     defined = set(re.findall(r"^newmtl (\S+)", mtl, re.M))
     assert used <= defined
+
+
+def test_cli_fit_can_declare_a_role():
+    """The CLI is the agents' fallback when MCP is not mounted. Without --role
+    every fit check returns unverified."""
+    import subprocess, sys
+    out = subprocess.run(
+        [sys.executable, "cli.py", "fit", "--help"],
+        capture_output=True, text=True, cwd=".",
+    )
+    assert "--role" in out.stdout

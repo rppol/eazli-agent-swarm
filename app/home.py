@@ -94,6 +94,8 @@ class Home:
             f"Main door leaf assumed {d['main_door_width_cm']}cm, internal doors "
             f"{d['internal_door_width_cm']}cm — not dimensioned on the plan.",
             "Lift car heights assumed 220cm — the plan gives car floor area only.",
+            "Lift car DOOR assumed 85 x 210cm — the plan dimensions the car but not "
+            "the opening you enter it through. Load-bearing for anything over 85cm.",
             "Door POSITIONS are a convention, not a survey: one inward-swinging "
             "door per room on the north wall, 30cm from the corner. The plan "
             "does not locate doors. Any door-swing verdict inherits this.",

@@ -312,3 +312,82 @@ def test_failing_route_does_not_mix_reassuring_notes_into_reasons():
     verdict = check_access_path(Dims(w=90, d=90, h=90), segs)
     assert verdict.status == "fail"
     assert all("clears" not in r for r in verdict.reasons)
+
+
+def test_a_coffee_table_out_of_reach_of_the_seating_fails():
+    """A brute-force search found 'valid' positions for a coffee table behind
+    the sofa. Every rule passed and the result was useless furniture.
+
+    Constraints are not the same as function: the 40cm rule only fired when the
+    pair were already close, so putting them 2m apart satisfied everything.
+    """
+    placements = [
+        Placement("sofa", SMALL_SOFA, x=5, y=205, facing="N", role="sofa"),
+        # 57cm behind the sofa: outside the 40cm rule (which only fires when too
+        # CLOSE), and clear of every walkway. Nothing at all used to fire.
+        Placement("table", Dims(w=80, d=80, h=30), x=0, y=350, role="coffee_table"),
+    ]
+    verdict = validate_layout(LIVING, placements)
+    assert verdict.status == "fail"
+    assert any("out of reach" in r.lower() for r in verdict.reasons)
+
+
+def test_a_coffee_table_in_front_of_the_sofa_passes():
+    """The Ashley Roanhowe at the position a brute-force search found: 66cm
+    deep, 49cm clear of the sofa front. In reach, and legal."""
+    placements = [
+        Placement("sofa", SMALL_SOFA, x=5, y=205, facing="N", role="sofa"),
+        Placement("table", Dims(w=127, d=66, h=48.6), x=0, y=90, role="coffee_table"),
+    ]
+    assert validate_layout(LIVING, placements).status == "pass"
+
+
+def test_a_coffee_table_with_no_seating_at_all_is_not_penalised():
+    """The rule is about a relationship. With nothing to relate to, it is silent."""
+    placements = [Placement("table", Dims(w=80, d=80, h=30), x=0, y=330, role="coffee_table")]
+    assert validate_layout(LIVING, placements).status == "pass"
+
+
+def test_a_dining_chair_tucked_at_its_table_is_not_a_violation():
+    """The same bug class as the dining table, one level down. A chair 2cm from
+    its table is correct; the walkway rule was treating the table as an
+    obstruction in front of the chair, and the chair as one in front of the table.
+    """
+    placements = [
+        Placement("t", Dims(w=140, d=80, h=76), x=98, y=386, role="dining_table", facing="S"),
+        Placement("c", Dims(w=45, d=50, h=95), x=108, y=334, role="dining_chairs_pair", facing="S"),
+    ]
+    assert validate_layout(LIVING, placements).status == "pass"
+
+
+def test_a_dining_chair_with_no_room_to_push_back_fails():
+    """Pull-out space is BEHIND a dining chair, not in front of it — in front is
+    the table. 20cm to the wall behind is not a usable seat."""
+    placements = [
+        Placement("t", Dims(w=140, d=80, h=76), x=98, y=100, role="dining_table", facing="S"),
+        Placement("c", Dims(w=45, d=50, h=95), x=108, y=20, role="dining_chairs_pair", facing="S"),
+    ]
+    verdict = validate_layout(LIVING, placements)
+    assert verdict.status == "fail"
+    assert any("push back" in r.lower() or "pull-out" in r.lower() for r in verdict.reasons)
+
+
+def test_a_hairline_clearance_is_reported_as_tight_not_clean():
+    """85cm through an 85cm opening is zero margin. Real openings lose width to
+    hinges, door stops and the hands carrying the item, so a verdict that reads
+    identically to a comfortable pass is how a return happens."""
+    verdict = check_access_path(
+        Dims(w=190, d=85, h=85),
+        [PathSegment("lift car doors", kind="door", width_cm=85, height_cm=210)],
+    )
+    assert verdict.status == "pass"
+    assert any("tight" in r.lower() for r in verdict.reasons)
+
+
+def test_a_comfortable_clearance_is_not_flagged_as_tight():
+    verdict = check_access_path(
+        Dims(w=190, d=60, h=70),
+        [PathSegment("lift car doors", kind="door", width_cm=85, height_cm=210)],
+    )
+    assert verdict.status == "pass"
+    assert not any("tight" in r.lower() for r in verdict.reasons)

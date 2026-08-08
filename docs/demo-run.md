@@ -50,6 +50,8 @@ She validated clearances by placing **probe rectangles** and running `validate_l
 
 `validation: {"status": "pass", "reasons": []}`
 
+*Recorded verbatim from the run. Re-running these seven slots against the current engine returns `fail` — the door-swing rule, the furniture-blocks-walkway rule and the coffee-table reach rule did not exist yet.*
+
 **Assumption she surfaced rather than buried:** the plan is drawn with the TV on the short north wall, which may require sliding the TV ~0.5 m along its existing wall. She asked to re-plan rather than have the user work around a wrong assumption.
 
 ---
@@ -66,9 +68,13 @@ She validated clearances by placing **probe rectangles** and running `validate_l
 >
 > The judge was still right about the underlying problem: **the three excluded slots are
 > also unfillable from this catalogue.** It verified independently that no `tv_unit` is
-> shallower than 40 cm against a 35 cm slot, and that there is no dining chair in the
-> catalogue at all. So the honest headline is not "3 of 4 slots filled" but **3 of 7
-> slots fillable**, with 6,320 SAR unspent.
+> shallower than 40 cm against a 35 cm slot, and that there is no standalone dining
+> chair in the catalogue — only two table-plus-chairs sets, neither of which publishes
+> chair dimensions. So the headline at the time was **3 of 7 slots fillable**, with
+> 6,320 SAR unspent.
+>
+> **A later review corrected even that.** See *the coffee table that did fit*, below:
+> the real figure is **4 of 7**, with 5,521 SAR unspent.
 
 Ran `check_fit` **and** `check_access_path` on every candidate.
 
@@ -82,24 +88,30 @@ Ran `check_fit` **and** `check_access_path` on every candidate.
 
 ### Unfilled
 
-**coffee_table** — no candidate in the catalogue is shallow enough. The slot allows 50 cm depth; the four available tables are 80, 80, 84 and 66 cm deep.
+**coffee_table** — no candidate fits *Noura's slot*. It allows 50 cm depth; the four available tables are 80, 80, 84 and 66 cm deep. **This is true of the slot and false of the room — see below.**
 
 > `validate_layout`: *"Only 13cm between sofa_B0FR3WVLTS and coffee_table_B0H8PQ9KDJ. Leave 40-45cm between the sofa front and the coffee table…"*
 
-He verified a hypothetical 110×50×45 table validates clean at Noura's coordinates, establishing the slot is sound and the gap is in the catalogue. **He did not move the slot.**
+He verified a hypothetical 110×50×45 table validates clean at Noura's coordinates, establishing the slot is internally sound. He concluded the gap was in the catalogue. **He did not move the slot** — correctly, since it was not his to move.
+
+#### The coffee table that did fit
+
+A brute-force search over every position in the room, run during a later review, found **all four catalogue coffee tables fit in front of the sofa**. The cheapest, `B0H8PQ9KDJ` at 799 SAR, validates clean at x=120, y=75 — 50 cm clear of the sofa front and within reach.
+
+So "the catalogue cannot fill this slot" was true, and "the catalogue cannot furnish this room" was not. Nobody was wrong: Noura cut a slot tighter than the room needed, and Adam correctly refused to widen someone else's slot. **The failure was that no edge in the agent graph sent it back to her.** The `/eazli` command now has that return edge, and this is the clearest thing the whole exercise produced — correct individual behaviour composing into a bad system outcome, visible only by measuring the end result rather than each step.
 
 ### Rejections — 22 items, each with a measurement
 
 Selected:
 
 - `B0DYF1DPPS` Interwood Traditional 3-Seater — *"passenger lift A (lift car 218x208x220cm): item 223x83x78cm does not fit the car in any orientation."* **An access failure independent of room fit — the exact case eazli's Fitment clause disclaims.**
-- `B0DM1DT6ZK` Tribesigns dining table, the catalogue's best-reviewed (4.5 / 475) — *"Only 85cm of walkway in front…; 90cm needed."* Lost to 5 cm.
+- `B0DM1DT6ZK` Tribesigns dining table, the best-reviewed *dining table* in the catalogue (4.5 / 475) — *"Only 85cm of walkway in front…; 90cm needed."* ~~Lost to 5 cm.~~ **This rejection was wrong.** The 90 cm figure is the seating walkway rule, misapplied to a table by a `/fit/check` that had no `role` field. It passes at the 75 cm a table actually needs. See the correction under *Findings* below.
 - `B0DT1FYTKH` Interwood Kent bouclé, 5.0-rated and the closest thing to "warm, minimal" — **86 cm tall against an 85 cm slot. Over by 1.0 cm.** Passes fit, passes access, passes full-layout validation. Escalated as a decision rather than buried as a rejection.
 - `B0DT1DXRKS` Interwood Astor — over depth, and *"flat entrance (door 90x210cm): clears at 82x170cm — must be carried on its side."*
 
 ### Findings Adam raised without acting on them
 
-1. **Noura's `dining_table` max depth of 80 cm is unachievable at y=386.** An 80 cm table leaves 85 cm behind it and fails the 90 cm walkway rule; the real ceiling there is 75 cm. That single number cost three candidates.
+1. ~~**Noura's `dining_table` max depth of 80 cm is unachievable at y=386.**~~ **This finding was wrong, and the reason it was wrong is more interesting than the finding.** An 80 cm table does leave only 85 cm behind it, and `/fit/check` did reject it against a 90 cm rule. But that rule is the *seating* walkway rule, and `/fit/check` was applying it to everything because `FitRequest` had no `role` field. A dining table needs chair pull-out room (75 cm), not a circulation walkway. **Noura's 80 cm budget was correct all along**, and this false finding cost three candidates including the catalogue's best-reviewed dining table (4.5★, 475 reviews). Traced and corrected in a later run — see *Round 3* in [`../SHOWCASE.md`](../SHOWCASE.md). Clearance is now resolved by role, identically in both endpoints.
 2. **No product in these categories publishes carton dimensions**, so every access check ran on assembled size. Most are `flat_pack: true`, making those verdicts pessimistic.
 3. **Three floor lamps carry transposed axes** the parser does not flag — a "standing floor lamp" listed 13 cm tall, another 40 cm. They failed on depth anyway.
 4. **`validate_layout` silently skipped its own rules** when passed bare ASINs as item ids, returning a false `pass` on his first run. *Fixed — see below.*
@@ -128,9 +140,9 @@ instructed to mark hard.
 
 | dimension | score | why |
 |---|---|---|
-| Scope discipline | **5** | Every agent stayed inside its published boundary. Adam found Noura's slot budget geometrically impossible and wrote it up rather than silently re-cutting it — *"the single most tempting breach available to him and he declined it."* |
+| Scope discipline | **5** | Every agent stayed inside its published boundary. Adam found Noura's slot budget apparently impossible and wrote it up rather than silently re-cutting it — *[the finding was later shown to be wrong; what earns the 5 is the behaviour, escalating rather than re-cutting]* — *"the single most tempting breach available to him and he declined it."* |
 | Groundedness | **4** | Every number the judge re-checked matched exactly. Docked because the transcript quotes only two observations, so most figures are unauditable from the document alone: *"I had to leave the transcript to confirm them."* |
-| Calibrated honesty | **3** | Section 2 reports `validation: pass`; Section 3 then proves a slot inside that layout cannot satisfy the 90 cm rule at its stated maximum. The contradiction is never reconciled. The assumed 290 cm ceiling is never surfaced. |
+| Calibrated honesty | **3** | Section 2 reports `validation: pass`; Section 3 then appears to prove a slot inside that layout cannot satisfy the 90 cm rule at its stated maximum, and the contradiction is never reconciled. *[It was resolved afterwards: the 90 cm rule was the wrong rule for a table.]* The assumed 290 cm ceiling is never surfaced. |
 | Failure-mode handling | **3** | *"Bimodal."* The lift rejection and the validator bug were handled at a 5. But a 79% budget underspend passes without a sentence. |
 | Usefulness | **2** | Three of seven slots unaccounted for; the one item the user named — a coffee table — is the one not delivered, with no alternative offered; the escalated Kent sofa is put to the user as a decision **without its price**, so the decision cannot be made. |
 | Reasoning integrity | **2** | *"There is no trace."* The ReAct protocol was added after this run, so the transcript is retrospective narration. Not one step marked `revised`, despite two genuine course changes. Scored 2 rather than 1 only because no observation was fabricated. |
@@ -157,7 +169,9 @@ independently by the grader.
 - Scoping omission corrected above.
 - `reasoning_integrity` is a genuine gap: the ReAct protocol post-dates this run.
   `docs/reasoning-protocol.md` and the `trace` field now exist; the next run emits one.
-- The unreconciled `pass` in Section 2 stands as reported. Noura's `dining_table` slot
-  budget of 80 cm depth is wrong at y=386 — the ceiling is 75 cm — and the layout table
-  above still shows the number she produced, not a corrected one, because rewriting it
-  would misrepresent what the run actually did.
+- The unreconciled `pass` in Section 2 is now reconciled, and **not in the direction the
+  judge assumed**. Noura's 80 cm `dining_table` budget was correct all along; the 90 cm
+  figure came from `/fit/check` applying the seating walkway rule to a table because the
+  endpoint had no `role` field. Re-running it today returns `{"status": "pass",
+  "reasons": []}`. The layout table above shows the number she produced, which needed no
+  correction.

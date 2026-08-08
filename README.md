@@ -12,7 +12,7 @@ override.
 Claude Code subagents        MCP shim  →   FastAPI   →   ChromaDB
   zeina-guide      intake, routing        geometry.py     eazli_kb  (78)
   noura-designer   layout slots           (deterministic, products  (75)
-  adam-advisor     product sourcing       110 tests)      design_principles (4)
+  adam-advisor     product sourcing       120 tests)      design_principles (6)
   fit-auditor      adversarial re-check
   eazli-judge      LLM-as-judge eval
   surveyor         floor plan → geometry
@@ -27,7 +27,7 @@ reasoning is Claude Code subagents.
 ## Why this exists
 
 eazli sells vendors on a **27–43% reduction in returns "driven by better fit,
-visualization & expectations"**. Their AI Agent policy simultaneously disclaims liability
+visualization and expectations"**. Their AI Agent policy simultaneously disclaims liability
 for whether *"an item (e.g. a sofa) cannot be delivered, moved in, installed"* through
 *"doorways, hallways, stairs, and elevators"*.
 
@@ -69,7 +69,7 @@ isometric view and how the agents argued their way here.
 
 ```bash
 uv sync
-PYTHONPATH=. uv run python ingest/build_kb.py        # 78 chunks + 4 design rules
+PYTHONPATH=. uv run python ingest/build_kb.py        # 78 chunks + 6 design rules
 PYTHONPATH=. uv run python ingest/build_catalog.py   # 75 amazon.sa products
 uv run uvicorn app.main:app --port 8000              # docs at /docs
 
@@ -96,7 +96,7 @@ Refusing to answer is the feature; a confident wrong answer is what produces a r
 
 Of 75 real listings, **57 are usable for a confirmed fit claim**. The other 18 are kept
 in the index so an agent can find and dismiss them, flagged as contradictory, physically
-impossible, or the wrong category entirely. Real marketplace data looks like this:
+impossible, the wrong category entirely, or publishing no dimensions at all. Real marketplace data looks like this:
 
 ```
 1.05D x 2.2W x 0.83H Meters     ← metres
@@ -123,12 +123,12 @@ wherever a verdict depends on one.
 
 Split by decidability, which is the point:
 
-**Ground truth (30 scenarios, no model involved)** — `evals/run_evals.py`. Geometry,
+**Ground truth (32 scenarios, no model involved)** — `evals/run_evals.py`. Geometry,
 catalogue provenance, plan limits. Runs in CI, exits non-zero on regression.
 
 ```
 access 6/6 · access_carton 2/2 · fit 3/3 · quota 3/3
-catalog 9/9 · layout 4/4 · retrieval 2/2 · provenance 1/1   total 30/30
+catalog 9/9 · layout 6/6 · retrieval 2/2 · provenance 1/1   total 32/32
 ```
 
 **LLM-as-judge (6 dimensions)** — `eazli-judge` grades only what is genuinely
@@ -164,7 +164,7 @@ judge can tell load-bearing reasoning from post-hoc narration. See
 app/geometry.py     deterministic spatial engine — fit, layout, access path
 app/home.py         floor plan + per-room delivery routes
 app/catalog.py      amazon.sa listing parser with provenance
-app/main.py         FastAPI service (the only place logic lives)
+app/main.py         FastAPI service — the only entry point to the engine
 mcp_server.py       MCP shim — typed passthrough, no logic
 cli.py              CLI over the same endpoints
 ingest/             KB and catalogue builders + browser capture server
@@ -175,8 +175,10 @@ docs/teardown.md    product analysis of eazli
 docs/demo-run.md    a full recorded swarm run
 ```
 
-Three callers — MCP, CLI, tests — all reach the same FastAPI endpoints, so they cannot
-disagree about whether something fits.
+MCP and the CLI are both thin HTTP callers onto the same FastAPI endpoints, and
+`tests/test_api.py` exercises those endpoints directly — so the three cannot disagree
+about whether something fits. The geometry, catalogue and home tests import the
+modules directly, which is why they could not have caught the stale-service bug.
 
 ---
 

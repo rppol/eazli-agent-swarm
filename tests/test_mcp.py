@@ -56,3 +56,12 @@ def test_unreachable_backend_returns_actionable_json(monkeypatch):
     body = json.loads(mcp_server._call("GET", "/health"))
     assert "error" in body
     assert "uvicorn" in body["fix"]
+
+
+def test_check_fit_tool_exposes_role(tools):
+    """Regression: making an unknown role 'unverified' left both the MCP tool
+    and the CLI with no way to declare one, so every fit check came back
+    unverified — the fix broke the callers it was meant to protect."""
+    schema = next(t for t in tools if t.name == "check_fit").input_schema
+    assert "role" in schema["properties"]
+    assert "role" in next(t for t in tools if t.name == "check_fit").description

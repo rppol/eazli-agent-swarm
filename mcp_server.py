@@ -139,6 +139,7 @@ def check_fit(
     height_cm: float,
     x: float,
     y: float,
+    role: str = "",
     item_id: str = "item",
     facing: str = "S",
     dims_confidence: str = "stated",
@@ -146,11 +147,21 @@ def check_fit(
     """Check whether an item fits at a position IN a room.
 
     Uses ASSEMBLED dimensions. Checks bounds, ceiling, door swing, fixed
-    fixtures and the 90cm walkway rule. Pass dims_confidence='missing' when the
-    listing has no dimensions: the result will be 'unverified', never 'pass'.
+    fixtures and the walkway rule.
+
+    ALWAYS pass `role` — sofa, coffee_table, dining_table, floor_lamp,
+    tv_console, bookshelf, wardrobe, bed, rug. It decides how much clear space
+    the item needs in front: 90cm for seating, 75cm of pull-out room for
+    tables, none for wall-standing pieces. Without it the result is
+    'unverified' rather than a guess, because applying the seating rule to a
+    console would reject it for a reason that does not apply.
+
+    Pass dims_confidence='missing' when the listing has no dimensions: the
+    result will be 'unverified', never 'pass'.
     """
     return _call("POST", "/fit/check", {
         "unit": unit, "room": room, "x": x, "y": y, "facing": facing,
+        "role": role or None,
         "item": {
             "id": item_id, "w": width_cm, "d": depth_cm, "h": height_cm,
             "confidence": dims_confidence,

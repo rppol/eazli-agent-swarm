@@ -74,10 +74,14 @@
   "delivery_route": {
     "description": "The route eazli's Fitment clause makes the customer responsible for verifying. Split into the shared leg every delivery crosses and a final leg that depends on the destination room, because scoring a living-room sofa against a bedroom door produces false rejections.",
     "to_flat_door": [
+      {"name": "lift car doors",   "kind": "door",     "width_cm": 85,  "height_cm": 210,
+       "confidence": "assumed",
+       "note": "The plan dimensions the lift CAR but not its doors. A car is entered through an opening far narrower than the car itself, and omitting it let a 218cm sofa 'pass' a lift it cannot physically enter — a false pass on exactly the obstacle class this check exists to catch. 85cm is a typical residential car door and is ASSUMED. Measure it before trusting any verdict that turns on it."},
       {"name": "passenger lift A", "kind": "lift",     "width_cm": 218, "height_cm": 220, "depth_cm": 208},
       {"name": "lift lobby",       "kind": "corridor", "width_cm": 150, "height_cm": 240},
       {"name": "common passage",   "kind": "corridor", "width_cm": 150, "height_cm": 240},
-      {"name": "turn into flat",   "kind": "turn",     "width_cm": 150, "height_cm": 240, "turn_into_cm": 89},
+      {"name": "turn into flat",   "kind": "turn",     "width_cm": 150, "height_cm": 240, "turn_into_cm": 90,
+       "note": "You turn out of the 150cm common passage into the 90cm flat door. This previously pointed at the 89cm internal passage, which is behind that door and is already its own leg — turning into it twice."},
       {"name": "flat entrance",    "kind": "door",     "width_cm": 90,  "height_cm": 210}
     ],
     "open_plan_rooms": ["living_dining"],

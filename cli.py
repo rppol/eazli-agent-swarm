@@ -57,6 +57,13 @@ def main() -> None:
     p.add_argument("w", type=float); p.add_argument("d", type=float); p.add_argument("h", type=float)
     p.add_argument("--x", type=float, default=0); p.add_argument("--y", type=float, default=0)
     p.add_argument("--confidence", default="stated")
+    p.add_argument("--facing", default="S", choices=["N", "S", "E", "W"])
+    p.add_argument(
+        "--role",
+        help="sofa, coffee_table, dining_table, floor_lamp, tv_console, bookshelf, "
+             "wardrobe, bed, rug... Decides how much clear space the item needs in "
+             "front. Without it the result is 'unverified' rather than a guess.",
+    )
 
     p = sub.add_parser("products", help="search the amazon.sa catalogue")
     p.add_argument("query"); p.add_argument("--room"); p.add_argument("--max-price", type=float)
@@ -92,7 +99,8 @@ def main() -> None:
     elif args.cmd == "fit":
         out = call("POST", "/fit/check", {
             "unit": args.unit, "room": args.room, "x": args.x, "y": args.y,
-            "item": {"id": "item", "w": args.w, "d": args.d, "h": args.h,
+            "facing": args.facing, "role": args.role,
+            "item": {"id": args.role or "item", "w": args.w, "d": args.d, "h": args.h,
                      "confidence": args.confidence},
         })
 

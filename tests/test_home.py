@@ -42,11 +42,21 @@ def test_route_to_a_bedroom_includes_the_internal_room_door(home):
     assert any(s.kind == "door" and s.width_cm == 75 for s in route)
 
 
-def test_route_always_starts_at_the_lift_and_crosses_the_flat_entrance(home):
+def test_route_starts_at_the_lift_doors_not_the_lift_car(home):
+    """A lift car is entered through an opening much narrower than the car.
+    Omitting the doors let a 218cm sofa 'pass' a lift it cannot enter — a false
+    pass on exactly the obstacle class this check exists to catch.
+    """
     route = home.route_to("unit04", "master_bedroom_1")
-    kinds = [s.kind for s in route]
-    assert kinds[0] == "lift"
+    assert route[0].kind == "door"
+    assert "lift" in route[0].name.lower()
+    assert route[0].width_cm < route[1].width_cm, "the doors must be narrower than the car"
+    assert route[1].kind == "lift"
     assert any(s.name == "flat entrance" for s in route)
+
+
+def test_the_lift_door_assumption_is_declared(home):
+    assert any("lift car door" in a.lower() for a in home.assumptions)
 
 
 def test_three_seat_sofa_reaches_the_living_room_but_not_a_bedroom(home):

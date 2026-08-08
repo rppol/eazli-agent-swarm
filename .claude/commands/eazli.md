@@ -48,6 +48,14 @@ Check that `validation.status` is `pass`. If it is not, Noura has not finished; 
 
 Pass the brief and Noura's slots. Get back picks, rejections, and unverified items.
 
+**3b. Re-plan any unfilled slot — back to `noura-designer`**
+
+If Adam reports **any** slot he could not fill, send those slots back to Noura once, with his measured reasons, and ask her to re-cut them against the room rather than against her first guess.
+
+Do not skip this. Adam is right to refuse to move her slots — that boundary is what keeps the design coherent — but without a return edge, correct individual behaviour composes into a bad answer. In the recorded run this cost a real coffee table: Noura's slot allowed 110 × 50 cm, every candidate was 66–84 cm deep, and Adam correctly reported the slot unfillable. **A brute-force search over the room afterwards found all four coffee tables fit in front of the sofa** — the room had the space, the slot did not. The user was told the catalogue failed them when the layout was over-constrained.
+
+So: unfilled slot → Noura re-cuts → Adam re-sources that slot only. One round. If it is still unfillable after she has widened it to what the room genuinely allows, then it is a real catalogue gap and worth reporting as one.
+
 **4. Audit — `fit-auditor`**
 
 Pass everything: the brief, the slots, and Adam's output. This agent has authority to reject.
