@@ -1,0 +1,277 @@
+{
+  "schema": "eazli.agent-trace/v1",
+  "schema_note": "Deliberately shaped like an OpenTelemetry / LangSmith trace: a flat list of spans, each with an id, an optional parent_id, a start and end, inputs, outputs, and nested tool calls. Nothing here is specific to how this run happened to be produced. A live orchestrator emitting the same shape can be swapped in without the viewer changing, which is the point of writing it down rather than rendering straight from a transcript.",
+  "run_id": "run_2026-08-09_unit04_living_dining",
+  "recorded": "2026-08-09",
+  "provenance": "REAL. Every span below is the recorded output of an actual Claude Code subagent invocation against the live FastAPI service and the real amazon.sa capture. The handoff is genuine: Zeina's JSON brief was passed verbatim into Noura's prompt, not summarised. Nothing in this file was written to illustrate a point.",
+  "pattern": "orchestrator-worker with A2A handoff. The main session is the orchestrator; it dispatches specialists and passes each one the previous one's literal output. Agents do not call each other directly — Claude Code subagents cannot spawn subagents — so the orchestrator is the bus. That constraint is real and is why the routing decision is a field the agent returns rather than a call it makes.",
+  "transport": "MCP. Every tool call below resolved through mcp__eazli-tools__* against app/main.py, or through cli.py over the identical endpoints when the MCP server was not mounted.",
+  "request": "We've just got the keys to flat 04 — it's the 3-bedroom. The living/dining is the big one and honestly it's intimidating, it's long and we don't know where to start. Budget's 15,000 SAR. We like industrial and mid-century things, dark metal, walnut. Two of us, we host maybe six people for dinner every other weekend. We already own a TV, nothing else.",
+  "spans": [
+    {
+      "id": "span-orchestrator",
+      "parent_id": null,
+      "agent": "orchestrator",
+      "role": "main session",
+      "kind": "chain",
+      "summary": "Dispatch intake, then hand the brief to layout.",
+      "outputs": {
+        "routed": [
+          "zeina-guide",
+          "noura-designer"
+        ],
+        "note": "Adam and fit-auditor follow once there is a layout to source against."
+      }
+    },
+    {
+      "id": "span-zeina",
+      "parent_id": "span-orchestrator",
+      "agent": "zeina-guide",
+      "role": "AI Guide",
+      "kind": "agent",
+      "duration_ms": 154776,
+      "tokens": 21984,
+      "tool_calls": [
+        {
+          "tool": "list_home_units",
+          "result": "unit04 = Flat 04 — 3BHK; rooms include living_dining. 15,000 SAR maps to the comfort tier."
+        },
+        {
+          "tool": "get_room",
+          "args": {
+            "unit": "unit04",
+            "room": "living_dining"
+          },
+          "result": "610cm x 335cm (20' x 11')"
+        },
+        {
+          "tool": "check_plan_quota",
+          "args": {
+            "plan": "explorer"
+          },
+          "result": "1 room / 5 layouts / 10 redesigns — a single room fits Explorer, no upsell to flag."
+        },
+        {
+          "tool": "search_eazli_kb",
+          "args": {
+            "query": "Zeina role guide before agent"
+          },
+          "result": "Confirmed her own scope: orientation layer, routes to specialists, no catalogue and no quote."
+        },
+        {
+          "tool": "search_eazli_kb",
+          "args": {
+            "query": "long narrow living dining room layout"
+          },
+          "result": "faq-026: designs can be adjusted to your budget and can incorporate items you already own."
+        }
+      ],
+      "outputs": {
+        "brief": {
+          "unit": "unit04",
+          "room": "living_dining",
+          "budget_sar": 15000,
+          "style": [
+            "industrial",
+            "mid-century",
+            "dark metal",
+            "walnut"
+          ],
+          "must_keep": [
+            "existing TV"
+          ]
+        },
+        "blocking_questions": [
+          "Is the TV's wall/power outlet position fixed, or can the TV go on any wall?",
+          "Should the dining table seat 6 permanently, or would an expandable table suit this long narrow room better?"
+        ],
+        "route_to": "noura-designer",
+        "why": "The customer described a problem and a style, not a shopping list. Zoning has to come before any product is named."
+      },
+      "honesty_note": "She did NOT ask the customer for the room dimensions, the unit type, or whether the plan tier fits — all three were resolvable from tools, so she looked them up instead of asking. The two questions she did raise are the two the surveyed data genuinely cannot answer."
+    },
+    {
+      "id": "span-noura",
+      "parent_id": "span-orchestrator",
+      "agent": "noura-designer",
+      "role": "AI Design Agent",
+      "kind": "agent",
+      "duration_ms": 1185110,
+      "tokens": 146341,
+      "input_from": "span-zeina",
+      "input_note": "Zeina's JSON brief was passed verbatim. This is the A2A handoff.",
+      "react_trace": [
+        {
+          "step": 1,
+          "thought": "Zeina's brief states 610x335cm; get_room should confirm and add door and ceiling data I do not have.",
+          "action": "get_room(unit04, living_dining)",
+          "observation": "610 x 335 x 290, height_confidence: assumed",
+          "reflection": "Matched. No door position or outlet data is returned at all, which confirms both of Zeina's open questions are unanswerable from surveyed data.",
+          "revised": false
+        },
+        {
+          "step": 4,
+          "thought": "home.py's _default_door convention should put this room's door on the N wall 30cm from the corner. A probe at x=30,y=0 should fail door_swing if so.",
+          "action": "check_fit(w=90,d=80,h=80, x=30,y=0, facing=S)",
+          "observation": "fail — blocks the N door swing (90cm leaf).",
+          "reflection": "Door located empirically: N wall, x 30-120. This is a documented convention, not a survey, so every circulation claim below inherits the assumption. Flagged rather than presented as measured.",
+          "revised": false
+        },
+        {
+          "step": 5,
+          "thought": "First full layout, everything backed to the south wall so each item's own front clearance doubles as the corridor. Every individual clearance looks satisfied.",
+          "action": "validate_layout(8 placements)",
+          "observation": "fail — 'Only 55cm of walkway in front of dining_table (blocked by the wall); 75cm needed' and 'sofa and reading_lamp overlap'.",
+          "reflection": "Wrong on two counts I did not predict. The table's front-clearance is checked against its facing, and I had it facing a wall 55cm away instead of into the clear corridor — a real error in my model of which way a table's front points. The lamp overlap was plain arithmetic.",
+          "revised": true
+        },
+        {
+          "step": 6,
+          "thought": "Does a 75cm chair pull-out clash with the inter-zone route in a room this shallow? I predict the obvious orientation fails.",
+          "action": "validate_layout with the table's long axis east-west, three chairs north and three south",
+          "observation": "fail — 'Only 50cm to push back behind dining_seating_south; 75cm needed'.",
+          "reflection": "Confirmed, and harder than a circulation conflict: 335cm of depth cannot hold walkway + chairs + table + chairs + pull-out at all. This is why the real design rotates the table 90 degrees so the chairs pull out along the 610cm length.",
+          "revised": false
+        },
+        {
+          "step": 8,
+          "thought": "A slot budget set to the exact tested size fails the moment Adam sources something slightly larger. Re-test with every slot at its stated maximum.",
+          "action": "validate_layout at worst-case dimensions, then circulation_map",
+          "observation": "pass, no reasons. circulation: 2037 of 2037 passable cells reachable — 100% coverage.",
+          "reflection": "Holds at the largest dimensions Adam is permitted to source, not just at my nominal picks.",
+          "revised": false
+        }
+      ],
+      "outputs": {
+        "concept": "Split lengthwise into a dining bay near the entry and a sofa/TV bay at the far end, linked by a ~105cm corridor hugging the north wall, so you never cross a seating group to reach the television.",
+        "key_decision": "The dining table is rotated 90 degrees from the obvious orientation so its six chairs pull back into the room's 610cm length rather than its 335cm depth. That single rotation is what made the room passable.",
+        "circulation": "100% of passable floor reachable from the door, at worst-case dimensions. Baseline for this room's generated plan was 4%.",
+        "rules_cited": [
+          "walkway_primary",
+          "walkway_secondary",
+          "pull_out",
+          "door_swing",
+          "circulation",
+          "tv_sightline",
+          "sofa_to_coffee_table",
+          "coffee_table_reach",
+          "rug_anchors_seating",
+          "lamp_within_reach_of_seating"
+        ],
+        "constraints_for_adam": [
+          "Do not exceed any slot's max dimensions — those are the numbers validate_layout was tested against, not nominal targets with hidden slack.",
+          "Each dining_seating slot budgets for THREE chairs despite the dining_chairs_pair role name.",
+          "Run check_access_path before finalising the sofa: the lift car door is ASSUMED at 85cm, not measured."
+        ]
+      },
+      "honesty_note": "Two of the eight ReAct steps carry revised: true, and step 6 is a deliberate counter-test she ran to disprove her own preferred orientation. She answered one of Zeina's two open questions from the floor plan and said plainly that the other could not be answered from surveyed data."
+    },
+    {
+      "id": "span-adam",
+      "parent_id": "span-orchestrator",
+      "agent": "adam-advisor",
+      "role": "AI Sales Advisor",
+      "kind": "agent",
+      "duration_ms": 1104625,
+      "tokens": 159902,
+      "input_from": "span-noura",
+      "input_note": "Noura's validated slot table and her five constraints were passed verbatim. Second A2A handoff of the run.",
+      "tool_calls": [
+        {
+          "tool": "check_plan_quota",
+          "args": {
+            "plan": "active"
+          },
+          "result": "Within plan limits."
+        },
+        {
+          "tool": "check_fit",
+          "args": {
+            "slot": "dining_table",
+            "w": 80,
+            "d": 80,
+            "h": 75
+          },
+          "result": "pass"
+        },
+        {
+          "tool": "check_fit",
+          "args": {
+            "slot": "primary_seating",
+            "asin": "B0DT1DXRKS",
+            "w": 170,
+            "d": 104.5,
+            "h": 82.5
+          },
+          "result": "FAIL — sofa falls outside the room bounds: occupies 400-570 x 235-340cm in a 610 x 335cm room."
+        },
+        {
+          "tool": "check_access_path",
+          "args": {
+            "asin": "B0FDB74K56",
+            "w": 173,
+            "d": 274,
+            "h": 58
+          },
+          "result": "FAIL — passenger lift A (218x208x220cm): does not fit the car in any orientation; turn into flat needs 274cm of swing against 217cm available."
+        },
+        {
+          "tool": "check_fit",
+          "args": {
+            "asin": "B0FRF315T1",
+            "w": 200,
+            "d": 300,
+            "h": 2
+          },
+          "result": "FAIL in both orientations — the catalogue's standard 200x300 rug does not fit a 150x190 slot."
+        },
+        {
+          "tool": "validate_layout",
+          "args": {
+            "placements": 8
+          },
+          "result": "pass — the eight picks work as a set, not only individually."
+        }
+      ],
+      "react_trace": [
+        {
+          "step": 6,
+          "thought": "B0DT1DXRKS is the best style match in the sofa list at 104.5cm deep against a 100cm slot budget. I expect it to fail on the depth-budget rule.",
+          "action": "check_fit(170 x 104.5 x 82.5 at 400,235)",
+          "observation": "fail — falls outside the room bounds: 235+104.5 = 339.5 against a 335cm room.",
+          "reflection": "Failed as predicted but for a different reason than I expected: room-bounds overflow at this y position, not a budget comparison. Same outcome, different mechanism. My model conflated Noura's stated max with the tool's bounds check.",
+          "revised": true
+        },
+        {
+          "step": 7,
+          "thought": "The Korser sectional is almost certainly the sofa the brief warned about. I expect both the room and the route to reject it.",
+          "action": "check_fit then check_access_path",
+          "observation": "both fail, independently.",
+          "reflection": "Confirms the warning was right on two separate axes.",
+          "revised": false
+        }
+      ],
+      "outputs": {
+        "total_sar": 6927.07,
+        "budget_sar": 15000,
+        "slots_filled": 8,
+        "unfilled": 0,
+        "binding_constraint": "Not price — 8,073 SAR came back unspent. The catalogue simply does not stock industrial/mid-century/walnut furniture in most categories.",
+        "single_sku_slots": [
+          "coffee_table",
+          "floor_covering"
+        ],
+        "findings_for_auditor": [
+          "B08XWQN5H3 is 85.1cm tall and passes check_fit cleanly, because check_fit measures against the room's 290cm ceiling and has no concept of Noura's tighter 85cm slot budget. The design-envelope check has to happen in the agent layer, manually, every time. Worth an optional max-envelope parameter.",
+          "coffee_table and floor_covering are effectively single-SKU at Noura's footprint — no fallback exists if either goes out of stock.",
+          "No SKU sells dining chairs in threes and no matching single exists, so a 3-chair run cannot be bought exactly."
+        ]
+      },
+      "honesty_note": "One of ten steps carries revised: true, and it is a correction to Adam's own model rather than a tool error. He also rejected a chair the tool passed, because it broke Noura's budget by 1mm — choosing the upstream agent's constraint over his own tool's verdict."
+    }
+  ],
+  "not_yet_run": {
+    "fit-auditor": "Re-verifies every claim and may reject. Adam has filed three findings for it. Not run in this recording.",
+    "eazli-judge": "Scores the completed run against a fixed rubric. Not run in this recording."
+  }
+}

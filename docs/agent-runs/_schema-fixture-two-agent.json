@@ -1,0 +1,76 @@
+{
+  "schema": "eazli.agent-trace/v1",
+  "schema_note": "A conformance fixture, not a recording. It exists to prove that app/static/trace.js is driven by the schema and not by the one run that happens to be in this folder: it uses different agent names, different tool names, a different depth of nesting, explicit start_ms offsets instead of derived ones, and a span field the viewer has never seen. If the viewer renders this file correctly without an edit, then a live orchestrator emitting eazli.agent-trace/v1 tomorrow will render too.",
+  "provenance_kind": "synthetic",
+  "run_id": "fixture_schema_conformance_two_agent",
+  "recorded": "n/a",
+  "provenance": "SYNTHETIC. Nothing here happened. No agent was invoked, no tool was called, and every value below was written by hand to exercise a branch of the viewer. It is evidence about the viewer, not about the system. The real recording in this folder is the one that carries provenance: REAL.",
+  "pattern": "orchestrator-worker with A2A handoff — the same pattern the real recording documents, restated here only so the topology panel has two nodes and one dashed edge to draw.",
+  "transport": "MCP. Placeholder calls resolving through mcp__fixture-tools__*, so the viewer's namespace extraction has a namespace to extract.",
+  "request": "A placeholder request string, so the header block has a request to render.",
+  "spans": [
+    {
+      "id": "fx-root",
+      "parent_id": null,
+      "agent": "fixture-root",
+      "role": "bus",
+      "kind": "chain",
+      "start_ms": 0,
+      "summary": "No duration of its own, so the viewer must draw an envelope rather than invent a bar.",
+      "outputs": {"routed": ["fixture-worker-a", "fixture-worker-b"]}
+    },
+    {
+      "id": "fx-a",
+      "parent_id": "fx-root",
+      "agent": "fixture-worker-a",
+      "role": "first worker",
+      "kind": "agent",
+      "start_ms": 0,
+      "duration_ms": 4200,
+      "tokens": 1234,
+      "tool_calls": [
+        {"tool": "fixture_lookup", "args": {"key": "placeholder"}, "result": "A placeholder result string."},
+        {"tool": "fixture_probe", "result": {"nested": true, "list": ["a", "b"]}}
+      ],
+      "outputs": {"handoff_payload": {"note": "This object is what the next span should show as received."}}
+    },
+    {
+      "id": "fx-b",
+      "parent_id": "fx-a",
+      "agent": "fixture-worker-b",
+      "role": "second worker, nested one level deeper",
+      "kind": "agent",
+      "start_ms": 4200,
+      "duration_ms": 7800,
+      "tokens": 5678,
+      "input_from": "fx-a",
+      "input_note": "The A2A edge the viewer has to draw, between two spans at different depths.",
+      "inputs": {"received": "the previous span's outputs, verbatim"},
+      "react_trace": [
+        {
+          "step": 1,
+          "thought": "A step with revised: false, so the viewer's ordinary styling has a case.",
+          "action": "fixture_probe()",
+          "observation": "placeholder observation",
+          "reflection": "placeholder reflection",
+          "revised": false
+        },
+        {
+          "step": 2,
+          "thought": "A step with revised: true, so the prominent revision treatment has a case.",
+          "action": "fixture_probe(again)",
+          "observation": "placeholder contradiction",
+          "reflection": "Placeholder self-correction.",
+          "revised": true,
+          "confidence": "a step key the viewer has never seen, which must still appear"
+        }
+      ],
+      "outputs": {"result": "placeholder"},
+      "honesty_note": "This note exists so the honesty-note block has something to render.",
+      "cost_usd": "a span key the viewer has never seen, which must still appear under 'other recorded fields'"
+    }
+  ],
+  "not_yet_run": {
+    "fixture-worker-c": "Never invoked. Present so the unrun rendering has a case."
+  }
+}
