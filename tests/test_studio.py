@@ -1439,17 +1439,27 @@ def test_a_candidate_that_outranked_the_winner_is_not_called_beaten(run_studio):
 
     from app.planner import _score
 
+    # Every other test in this family goes through `_exported_plans`, which
+    # skips when there is no build. This one globbed straight into site/ and
+    # asserted instead, so it passed on any machine with a stale build lying
+    # around and failed in CI, where the workflow builds the two Chroma
+    # indexes and never runs export_static.py. A test that depends on a
+    # gitignored artifact has to say so the same way its neighbours do.
+    plans = sorted(Path("site/data/plans").glob("*.json"))
+    if not plans:
+        pytest.skip("no static build in site/ — run `make site`")
+
     seen = 0
-    for path in sorted(Path("site/data/plans").glob("*.json")):
+    for path in plans:
         plan = json.loads(path.read_text(encoding="utf-8"))
-        _, _, style, _ = path.stem.split("__")
-        st = [] if style == "any" else style.split("-")
         for item in plan["placed"]:
             out = {r["asin"] for r in item["decision"]["rejected"]}
             for runner in item["decision"]["ranked_above"]:
                 if runner["asin"] in out:
                     seen += 1
-    assert seen, "no exported plan lists a passed-over candidate"
+    assert seen, (
+        "no exported plan lists a passed-over candidate — the last measured "
+        "build had 211 of 2,312 ranked_above entries also in rejected")
 
     # And on one of them, the page prints the removal rather than a rank.
     path = next(
