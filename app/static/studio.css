@@ -414,10 +414,15 @@ p.muted.small { margin: 4px 0 10px; }
   letter-spacing: 0; text-transform: none; margin-left: auto;
   white-space: nowrap; flex: none;
 }
+/* Last of the side-tabs to go. These rows sit under an amber heading, in an
+   amber-ruled panel, with an amber size and an amber "not stocked" line — the
+   stripe was the sixth thing saying the same word. A hairline between rows
+   separates them and says nothing extra. */
 .finish-row {
-  border-left: 2px solid color-mix(in srgb, var(--warn) 50%, transparent);
-  padding: 6px 0 6px 10px; margin: 12px 0 0;
+  border-top: 1px solid var(--line);
+  padding: 10px 0 2px; margin: 10px 0 0;
 }
+.finish-row:first-of-type { border-top: none; padding-top: 2px; }
 .finish-row:last-child { margin-bottom: 2px; }
 .finish-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 .finish-head strong { font-size: 13px; }
@@ -476,3 +481,31 @@ p.muted.small { margin: 4px 0 10px; }
                                     border-color: color-mix(in srgb, var(--bad) 30%, #fff); }
 .agent-turn.auditor .agent-gotcha code { color: var(--bad);
                                     background: color-mix(in srgb, var(--bad) 12%, #fff); }
+
+/* ---- the record, slot by slot ----------------------------------------- */
+/* Under Adam, because sourcing is his remit. Closed, each entry is one line —
+   slot, piece, price — so eleven of them read down the panel in a single pass
+   and the reasoning is what folds away.
+
+   Almost no new styling: the rows inside reuse .d-row, the same label grid the
+   product brief behind them already uses, and the control reuses button.link.
+   That is not only thrift. The record and the brief are one continuous answer
+   to "why this one", and a second table with its own gutter and its own inset
+   colour would make them look like two features that happen to be adjacent. */
+
+.slot-record { margin: 10px 0 0; }
+.slot-record ol { margin: 0; padding: 0; list-style: none; }
+.slot-record summary {
+  display: grid; grid-template-columns: 92px 1fr auto; gap: 10px;
+  align-items: baseline; padding: 6px 0; cursor: pointer;
+  list-style: none; font-size: 11.5px; border-top: 1px solid var(--line);
+}
+.slot-record summary::-webkit-details-marker { display: none; }
+/* One line, ellipsised, open or closed: the summary is a row in a list of
+   eleven and a title that rewraps on open shoves the rest of the panel
+   down. The full title is two lines below it in the brief. */
+.sr-title { color: var(--muted); overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+/* "161 sar" is a different unit from the one on the listing. */
+.sr-price { font: 600 12px/1.3 var(--mono); white-space: nowrap; }
+.sr-more { margin: 2px 0 9px; }
