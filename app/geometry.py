@@ -115,6 +115,25 @@ RULES: dict[str, dict] = {
                 "chair angled at open floor satisfies every clearance in this "
                 "engine and is still nobody's seat.",
     },
+    "circulation": {
+        "value_cm": 55,
+        "coverage": 0.90,
+        "text": "You have to be able to walk around the room. Measured on a 5cm "
+                "grid eroded by half a 55cm shoulder width — so a cell counts "
+                "only where a person actually fits — at least 90% of the floor "
+                "you could stand on must be reachable from the door, and every "
+                "piece of furniture must have somewhere to stand on the side "
+                "you use it from. 55cm is a shoulder, not a corridor: a "
+                "walkway still answers to the 90cm and 75cm rules. The 90% is "
+                "measured, not chosen for roundness. Brute-force search over "
+                "the planner's own grid reaches 100% with the same products in "
+                "the same rooms, including the fullest 11-item living/dining "
+                "plans; of 200 generated plans the 58 a person could actually "
+                "walk around scored 96.3-100% and the rest scored 3.5-38.3%, "
+                "with nothing in between. 90% sits below every walkable layout "
+                "measured and leaves room for the pocket no arrangement opens "
+                "up — the sliver behind a wardrobe in a corner.",
+    },
 }
 
 WALKWAY_PRIMARY_CM = RULES["walkway_primary"]["value_cm"]
@@ -261,6 +280,48 @@ SEATING_GROUP_ROLES = {"sofa", "armchair", "coffee_table"}
 # 75cm of the lamp the planner places at priority 3, so the premium tier's
 # armchair would have come back "could not be placed anywhere in the room".
 LAMP_REACH_ROLES = {"sofa", "armchair", "bed"}
+
+# How wide a person is, across the shoulders, and how finely the floor is
+# diced to find out where one fits. The occupancy grid is eroded by half of
+# SHOULDER_WIDTH_CM, so a cell is passable only when a person standing on it
+# has their whole width clear — which is the difference between this check and
+# the circulation BFS that preceded it. That one tested POINT connectivity and
+# reported zero failures over the same 200 plans, because a 1cm slot between
+# two bookshelves counts as a corridor if you are a point.
+#
+# 5cm is fine enough that the quantisation error (one cell) is smaller than the
+# margin any of these rules is measured to, and coarse enough that the whole
+# check costs about a fifth of a millisecond — it runs inside `validate_layout`,
+# which the planner calls once per candidate POSITION, so it has to be cheap.
+SHOULDER_WIDTH_CM = RULES["circulation"]["value_cm"]
+CIRCULATION_CELL_CM = 5.0
+CIRCULATION_MIN_COVERAGE = RULES["circulation"]["coverage"]
+
+# How far out from a piece of furniture counts as "standing at it". The same
+# 75cm as `reach_clearance`, and deliberately the same number rather than a new
+# one: it is the same measurement, an arm's length from where the person is.
+# It has to exceed half a shoulder by a real margin, because the nearest a
+# person's CENTRE can be to the front of a wardrobe is 27.5cm and the eroded
+# grid does not produce a passable cell until about 55cm out.
+APPROACH_DEPTH_CM = RULES["reach_clearance"]["value_cm"]
+
+# Which items are reached from one particular side rather than from wherever
+# the floor happens to be open.
+#
+# A wardrobe is opened from the front and nowhere else, so its front is the
+# whole question. A table is approached from whichever side you are on, and a
+# floor lamp has no front at all — the `facings` a lamp slot carries in
+# RECIPES is an artifact of the slot schema, not a claim about the object.
+# Asking a lamp's `facing` side to be reachable would have deleted the accent
+# lamp from most rooms: the planner stands it in a corner with facing="N" at
+# y=0, where the "front" is the wall behind it.
+STRICTLY_FRONTED_ROLES = {"wardrobe", "bookshelf", "tv_console"}
+
+# The two sides across from an item's front — the ones you arrive from when the
+# front is not where you can walk.
+_LATERAL_SIDES: dict[str, tuple[str, str]] = {
+    "N": ("W", "E"), "S": ("W", "E"), "E": ("N", "S"), "W": ("N", "S"),
+}
 
 # What an armchair is allowed to be facing. The sofa is the anchor everything
 # else orients around, so it is a target and never a subject: asking the first
@@ -700,6 +761,15 @@ def validate_layout(room: Room, placements: Sequence[Placement]) -> Verdict:
         reasons.extend(ergonomic)
         statuses.append("fail")
 
+    # Last, and about the room rather than about any item in it: everything
+    # above is a relationship between two objects, and a layout can satisfy all
+    # of them and still be one you cannot walk across.
+    blocked, circulation_notes = _you_can_walk_around_it(room, placements)
+    notes.extend(circulation_notes)
+    if blocked:
+        reasons.extend(blocked)
+        statuses.append("fail")
+
     # `notes` was collected from every per-item `check_fit` call above and
     # then discarded here: the door-swing-over-rug undercut warning existed
     # in `check_fit`'s own return and vanished the moment a caller went
@@ -956,6 +1026,423 @@ def _seat_has_a_focal_point(placements) -> list[str]:
                 f"{RULES['seat_has_a_focal_point']['text']}"
             )
     return out
+
+
+# --------------------------------------------------------------------------
+# circulation — can a person walk around the room?
+#
+# Everything above this line is a relationship between two objects. None of it
+# asks about the floor that is left over, and a room can satisfy every one of
+# them and still be a room you cannot cross. unit01/living_dining/15000/
+# industrial+mid_century passed all of them with 139 of its 3,270 standable
+# cells reachable from the front door: the door opened into a pocket bounded by
+# the sofa, and the dining table, the television and the armchair were all on
+# the far side of a 40cm slot between the bookshelf and the coffee table.
+#
+# The representation is one Python int per grid row, bit i set meaning "column
+# i is free". Erosion by a square structuring element is then a handful of
+# shifts and ANDs per row instead of a nested loop over 7,437 cells, which is
+# what keeps the whole check near 0.2ms — it runs inside `validate_layout`, and
+# the exporter calls that about 17,000 times for the swap tables alone.
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Circulation:
+    """Where a person fits, and where they can get to from the door.
+
+    `rows` and `reach` are per-row lists of half-open [start, end) column runs,
+    which is what both the flood fill and `roomcheck.py` want to read.
+    """
+
+    cell_cm: float
+    nx: int
+    ny: int
+    shoulder_cells: int
+    rows: list[list[tuple[int, int]]]        # passable, by row
+    reach: list[list[tuple[int, int]]]       # reachable from the door, by row
+    start: tuple[int, int] | None
+    passable_cells: int
+    reachable_cells: int
+
+    @property
+    def coverage(self) -> float:
+        """Share of the standable floor you can actually get to.
+
+        Zero passable cells is not zero coverage — it is a room with nowhere to
+        stand, which is a different statement and is reported as one.
+        """
+        if not self.passable_cells:
+            return 0.0
+        return self.reachable_cells / self.passable_cells
+
+    def reachable_in(self, x0: float, y0: float, x1: float, y1: float) -> bool:
+        """Is any part of this rectangle somewhere you could stand, having come
+        in through the door?"""
+        return self._any_in(self.reach, x0, y0, x1, y1)
+
+    def passable_in(self, x0: float, y0: float, x1: float, y1: float) -> bool:
+        """Is any part of this rectangle somewhere a person fits at all?
+
+        The difference between this and `reachable_in` is the whole subject of
+        the rule, and `tools/roomcheck.py` draws the two with different
+        characters so a reader can see which floor is stranded.
+        """
+        return self._any_in(self.rows, x0, y0, x1, y1)
+
+    def _any_in(self, runs, x0: float, y0: float, x1: float, y1: float) -> bool:
+        i0, i1, j0, j1 = self._cells(x0, y0, x1, y1)
+        for j in range(j0, j1):
+            for a, b in runs[j]:
+                if a < i1 and i0 < b:
+                    return True
+        return False
+
+    def _cells(self, x0: float, y0: float, x1: float, y1: float):
+        return (
+            max(0, int(math.floor(x0 / self.cell_cm))),
+            min(self.nx, int(math.ceil(x1 / self.cell_cm))),
+            max(0, int(math.floor(y0 / self.cell_cm))),
+            min(self.ny, int(math.ceil(y1 / self.cell_cm))),
+        )
+
+
+def _free_rows(room: Room, placements: Sequence[Placement], cell: float):
+    """Bitmask per row of the floor nothing is standing on.
+
+    A cell is blocked if an obstacle touches it at all, which rounds against
+    the person rather than against the furniture. Anything no taller than
+    `FLOOR_COVERING_MAX_H_CM` is not an obstacle: you walk over a rug, the same
+    exemption `_front_gap` and `_bed_can_be_got_into` already make.
+    """
+    nx = max(1, int(math.ceil(room.width_cm / cell)))
+    ny = max(1, int(math.ceil(room.depth_cm / cell)))
+    full = (1 << nx) - 1
+    free = [full] * ny
+    obstacles = list(placements) + list(room.fixed)
+    for p in obstacles:
+        if not p.dims.known or (p.dims.h or 0) <= FLOOR_COVERING_MAX_H_CM:
+            continue
+        x0, y0, x1, y1 = p.footprint()
+        i0, i1 = max(0, int(math.floor(x0 / cell))), min(nx, int(math.ceil(x1 / cell)))
+        j0, j1 = max(0, int(math.floor(y0 / cell))), min(ny, int(math.ceil(y1 / cell)))
+        if i1 <= i0 or j1 <= j0:
+            continue
+        keep = full & ~(((1 << (i1 - i0)) - 1) << i0)
+        for j in range(j0, j1):
+            free[j] &= keep
+    return nx, ny, free
+
+
+def _erode(nx: int, ny: int, free: list[int], r: int) -> list[int]:
+    """Keep only the cells with `r` clear cells on every side.
+
+    The structuring element is a square rather than a disc, which is the
+    conservative reading of a shoulder: a person turning on the spot sweeps the
+    circle, and the square contains it. Shifting past the ends of a row brings
+    in zeros, so the walls of the room erode exactly like furniture does and
+    need no special case.
+    """
+    full = (1 << nx) - 1
+    horizontal = []
+    for row in free:
+        m = row
+        for k in range(1, r + 1):
+            m &= (row >> k) & ((row << k) & full)
+        horizontal.append(m)
+    out = []
+    for j in range(ny):
+        if j < r or j + r >= ny:
+            out.append(0)               # too close to the north or south wall
+            continue
+        m = horizontal[j]
+        for k in range(1, r + 1):
+            m &= horizontal[j - k] & horizontal[j + k]
+        out.append(m)
+    return out
+
+
+def _row_runs(mask: int) -> list[tuple[int, int]]:
+    """A row bitmask as its maximal [start, end) runs of set bits.
+
+    Runs rather than cells because the flood fill then walks a graph of a few
+    hundred intervals instead of several thousand squares.
+    """
+    runs = []
+    while mask:
+        low = mask & -mask
+        start = low.bit_length() - 1
+        tail = (mask >> start) + 1
+        length = (tail & -tail).bit_length() - 1
+        runs.append((start, start + length))
+        mask &= ~(((1 << length) - 1) << start)
+    return runs
+
+
+def _door_start(room: Room, rows, nx: int, ny: int, cell: float):
+    """The cell a person occupies having just stepped through the door.
+
+    Taken from the real `room.doors` entry — wall, offset and width — because
+    assuming north would have been wrong for any room whose door the survey
+    ever locates, and `Home.assumptions` already warns that the convention is
+    a convention. The stated door centre is on the wall line, which is never
+    passable (the erosion treats a wall as an obstacle), so this walks inward
+    along the door's normal and takes the first passable cell, allowing a
+    little lateral drift for a doorway partly obstructed at one edge.
+    """
+    door = room.doors[0]
+    if door.wall in ("N", "S"):
+        cx = door.offset_cm + door.width_cm / 2
+        cy = 0.0 if door.wall == "N" else room.depth_cm
+        step = (0, 1) if door.wall == "N" else (0, -1)
+    else:
+        cy = door.offset_cm + door.width_cm / 2
+        cx = 0.0 if door.wall == "W" else room.width_cm
+        step = (1, 0) if door.wall == "W" else (-1, 0)
+
+    i = min(nx - 1, max(0, int(cx / cell)))
+    j = min(ny - 1, max(0, int(cy / cell)))
+    # Half the leaf, in cells: a person may enter at either edge of the opening
+    # but not from the wall beside it.
+    drift = max(1, int(door.width_cm / 2 / cell))
+    for depth in range(nx + ny):
+        ii, jj = i + step[0] * depth, j + step[1] * depth
+        if not (0 <= ii < nx and 0 <= jj < ny):
+            return None
+        for lateral in range(drift + 1):
+            for delta in ((0,) if lateral == 0 else (-lateral, lateral)):
+                a, b = (ii + delta, jj) if step[0] == 0 else (ii, jj + delta)
+                if not (0 <= a < nx and 0 <= b < ny):
+                    continue
+                if any(lo <= a < hi for lo, hi in rows[b]):
+                    return (a, b)
+    return None
+
+
+def _flood(rows, start, ny: int):
+    """Everything connected to `start`, four-connected, over row runs.
+
+    Over RUNS rather than cells: a room this size holds several thousand
+    passable cells but only a couple of hundred maximal runs, and two runs in
+    neighbouring rows are adjacent exactly when their column spans overlap.
+    Horizontal connectivity is then free — it is what a run is.
+
+    The adjacency is walked as it is discovered rather than built up front. An
+    earlier version materialised the whole graph on every call and that alone
+    was 1.8 of the 8.2 seconds a premium living/dining plan took, because the
+    planner calls this once per candidate position it tries.
+    """
+    out: list[list[tuple[int, int]]] = [[] for _ in range(ny)]
+    if start is None:
+        return out
+    si, sj = start
+    seed = next((k for k, (a, b) in enumerate(rows[sj]) if a <= si < b), None)
+    if seed is None:
+        return out
+    seen: list[set[int]] = [set() for _ in range(ny)]
+    seen[sj].add(seed)
+    stack = [(sj, seed)]
+    while stack:
+        j, k = stack.pop()
+        a, b = rows[j][k]
+        for jj in (j - 1, j + 1):
+            if not 0 <= jj < ny:
+                continue
+            row, visited = rows[jj], seen[jj]
+            for k2 in range(len(row)):
+                if k2 in visited:
+                    continue
+                a2, b2 = row[k2]
+                if a2 < b and a < b2:
+                    visited.add(k2)
+                    stack.append((jj, k2))
+    for j, visited in enumerate(seen):
+        row = rows[j]
+        out[j] = [row[k] for k in sorted(visited)]
+    return out
+
+
+def circulation_map(
+    room: Room,
+    placements: Sequence[Placement],
+    shoulder_cm: float = SHOULDER_WIDTH_CM,
+    cell_cm: float = CIRCULATION_CELL_CM,
+) -> Circulation:
+    """Where a person fits in this room, and how much of it they can get to.
+
+    `shoulder_cm` is a parameter so the failure report can re-run the same
+    model at narrower widths and say how narrow the route actually got.
+    """
+    nx, ny, free = _free_rows(room, placements, cell_cm)
+    r = int(shoulder_cm / 2 // cell_cm)
+    passable = _erode(nx, ny, free, r)
+    rows = [_row_runs(m) for m in passable]
+    start = _door_start(room, rows, nx, ny, cell_cm) if room.doors else None
+    reach = _flood(rows, start, ny)
+    return Circulation(
+        cell_cm=cell_cm, nx=nx, ny=ny, shoulder_cells=r, rows=rows, reach=reach,
+        start=start,
+        passable_cells=sum(b - a for row in rows for a, b in row),
+        reachable_cells=sum(b - a for row in reach for a, b in row),
+    )
+
+
+def _approach_strips(placement: Placement, depth: float = APPROACH_DEPTH_CM):
+    """The floor you would stand on to use this item, as rectangles.
+
+    Which sides count is a claim about the object, not about its bounding box:
+
+      bed       either long side. The head is against something by design and
+                nobody climbs in over the foot — the same reading
+                `_bed_can_be_got_into` already takes.
+      dining    the side BEHIND it, or either side beside it. In front of a
+      chair     dining chair is the table it is pulled up to, not floor —
+                `check_fit` already flips the probe for exactly this, and
+                `pull_out` is the rule that governs the space you stand in.
+                Without the flip a chair correctly tucked at its table reports
+                as unreachable: the brute-force arrangement in
+                `test_the_same_nine_products_...` puts one at (195,90)-(249,174)
+                facing S with the table at (210,150)-(330,230) filling the
+                whole strip in front of it.
+      seating   the front, or either side. NOT only the front. You sit down
+                into an armchair from whichever side is open, and the back is
+                against a wall by design. Measured: unit01/bedroom/30000/
+                warm+minimal has 64 armchair positions that satisfy every
+                other rule, and the best of them — (45,260)-(100,305) facing N,
+                back to the south wall, turned toward a bed that ends at
+                y=235 — leaves 25cm between chair and bed. Judged on its front
+                alone every one of those 64 is unreachable and the room loses
+                its armchair, which is the `bedside_reach` failure again. The
+                room is at 100% coverage; you simply arrive from the east.
+      STRICTLY  the side `facing` points at, and only that. A wardrobe door
+      FRONTED   opens one way and a bookshelf is read from in front.
+      anything  all four. A table is approached from wherever you happen to be,
+      else      and a floor lamp has no front to approach.
+    """
+    x0, y0, x1, y1 = placement.footprint()
+    role = placement.resolved_role()
+    sides: tuple[Wall, ...]
+    if role == "bed":
+        sides = ("N", "S") if (x1 - x0) >= (y1 - y0) else ("W", "E")
+    elif role in DINING_CHAIR_ROLES:
+        sides = (_flip(placement).facing, *_LATERAL_SIDES[placement.facing])
+    elif role in SEATING_ROLES:
+        sides = (placement.facing, *_LATERAL_SIDES[placement.facing])
+    elif role in STRICTLY_FRONTED_ROLES:
+        sides = (placement.facing,)
+    else:
+        sides = ("N", "S", "E", "W")
+    return [{
+        "N": (x0, y0 - depth, x1, y0),
+        "S": (x0, y1, x1, y1 + depth),
+        "W": (x0 - depth, y0, x0, y1),
+        "E": (x1, y0, x1 + depth, y1),
+    }[side] for side in sides]
+
+
+def _narrowest_routes(room: Room, placements, stranded, cell: float) -> dict:
+    """{item_id: how wide a person could be and still reach it, in cm}.
+
+    Missing from the mapping means no width reaches it at all — it is walled
+    in rather than merely pinched.
+
+    Re-runs the same model at the handful of widths below a shoulder, so the
+    answer is one of 45, 35, 25, 15 or 5cm, and tests EVERY stranded item
+    against each width rather than restarting the search per item. Done the
+    other way round this was 4.8 of the 8.2 seconds a premium living/dining
+    plan cost: the planner rejects hundreds of candidate positions per room and
+    every rejection was paying for a full narrowing search per stranded item.
+    """
+    found: dict[str, float] = {}
+    remaining = list(stranded)
+    width = SHOULDER_WIDTH_CM - 2 * cell
+    while remaining and width >= cell:
+        circ = circulation_map(room, placements, shoulder_cm=width, cell_cm=cell)
+        still: list[Placement] = []
+        for p in remaining:
+            if any(circ.reachable_in(*s) for s in _approach_strips(p)):
+                found[p.item_id] = width
+            else:
+                still.append(p)
+        remaining = still
+        width -= 2 * cell
+    return found
+
+
+def _you_can_walk_around_it(room: Room, placements) -> tuple[list[str], list[str]]:
+    """(failures, notes). Every rule above asks whether the boxes fit; this one
+    asks whether a person can get past them.
+
+    Two assertions, because one of them cannot see what the other catches. The
+    coverage share catches the room severed in half by a 40cm slot. It cannot
+    catch the bookshelf standing 50cm from a wall — that clears
+    `reach_clearance`, contributes no standable cells at all, and so leaves the
+    coverage at 100% while the shelf is unusable. The per-item check catches
+    that one and names the item.
+    """
+    known = [p for p in placements if p.dims.known]
+    if not known:
+        return [], []
+    if not room.doors:
+        # Reachability with nowhere to come in from is not a question. Said out
+        # loud rather than skipped in silence: `door_swing` spent a release
+        # iterating an empty `room.doors` while the API advertised it as
+        # enforced, and advertised-but-dead is worse than absent.
+        return [], [
+            f"{room.name} has no door on record, so circulation was not "
+            f"checked — there is no way in to measure reachability from. "
+            f"Every other rule in this verdict still ran."
+        ]
+
+    circ = circulation_map(room, known)
+    if circ.start is None:
+        return [
+            f"Nothing in {room.name} is reachable: the {room.doors[0].wall} door "
+            f"opens onto no floor a person {SHOULDER_WIDTH_CM:.0f}cm across "
+            f"could stand on. {RULES['circulation']['text']}"
+        ], []
+
+    stranded = [p for p in known
+                if not any(circ.reachable_in(*strip)
+                           for strip in _approach_strips(p))]
+    narrowest = (_narrowest_routes(room, known, stranded, circ.cell_cm)
+                 if stranded else {})
+
+    reasons: list[str] = []
+    for p in stranded:
+        width = narrowest.get(p.item_id)
+        route = (
+            f"the widest anyone could be and still get to it is about "
+            f"{width:.0f}cm"
+            if width is not None else
+            "no route of any width reaches it — it is walled in"
+        )
+        role = p.resolved_role()
+        side = ("either long side" if role == "bed"
+                else "the side you push it back to, or either side beside it"
+                if role in DINING_CHAIR_ROLES
+                else f"its {p.facing} side or either side beside it"
+                if role in SEATING_ROLES
+                else f"its {p.facing} side" if role in STRICTLY_FRONTED_ROLES
+                else "any side")
+        reasons.append(
+            f"You cannot get to {p.item_id}: there is nowhere to stand on "
+            f"{side}, walking in from the {room.doors[0].wall} door "
+            f"({route}, against the {SHOULDER_WIDTH_CM:.0f}cm a person needs). "
+            f"{RULES['circulation']['text']}"
+        )
+
+    if circ.passable_cells and circ.coverage < CIRCULATION_MIN_COVERAGE:
+        stranded = circ.passable_cells - circ.reachable_cells
+        area = stranded * (circ.cell_cm ** 2) / 10000.0
+        reasons.append(
+            f"Only {circ.coverage * 100:.0f}% of the floor a person fits on is "
+            f"reachable from the {room.doors[0].wall} door "
+            f"({circ.reachable_cells} of {circ.passable_cells} cells at "
+            f"{circ.cell_cm:.0f}cm); {area:.1f} m² of this room is cut off "
+            f"behind a gap narrower than {SHOULDER_WIDTH_CM:.0f}cm. "
+            f"{RULES['circulation']['text']}"
+        )
+    return reasons, []
 
 
 def _flip(placement: Placement) -> Placement:

@@ -19,16 +19,22 @@ note above `RECIPES`.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 
 from app.catalog import Product, parse_capture
 from app import styling
 from app.geometry import (
+    BEDSIDE_REACH_CM,
     BEDSIDE_ROLES,
+    COMPANION_PAIRS,
     DINING_CHAIR_ROLES,
+    FLOOR_COVERING_MAX_H_CM,
     FOCAL_POINT_MAX_CM,
     FOCAL_ROLES,
+    LAMP_REACH_CM,
     LAMP_REACH_ROLES,
+    SHOULDER_WIDTH_CM,
     TV_VIEWING_MIN_CM,
     Dims,
     Placement,
@@ -37,6 +43,7 @@ from app.geometry import (
     _lateral_axis,
     _seating_group_box,
     _span_overlap,
+    _swing_box,
     check_access_path,
     validate_layout,
 )
@@ -174,6 +181,25 @@ RECIPES["master_bedroom_1"] = RECIPES["bedroom"]
 RECIPES["master_bedroom_2"] = RECIPES["bedroom"]
 
 GRID_CM = 15
+
+# Sentinels for `_in_the_way`, big enough that no amount of stranded floor can
+# reach them: a position that overlaps something, or stands in a door's swing,
+# is one `validate_layout` will refuse, and it has to sort behind every
+# position that might hold rather than merely score badly.
+OVERLAPPING = 10 ** 6
+IN_THE_SWING = 10 ** 5
+
+# Stranded floor is bucketed to 500cm² — a 10x50cm strip — so that the term
+# stays a small integer with ties in it. See `_in_the_way`.
+STRANDED_BUCKET_CM2 = 500.0
+
+# How many times `_promoting_what_would_not_fit` may react to its own retry.
+# Two is what the measurement asked for and no more: one round recovers seven
+# of the nine bedrooms that lost an armchair to the circulation rule, the
+# second recovers the other two, and a third changed nothing in any of the 200
+# exported configurations while costing every already-failing room another
+# handful of full plans.
+PROMOTION_ROUNDS = 2
 
 
 def recipe_for(room_name: str) -> list[dict]:
@@ -483,6 +509,133 @@ def _front_space(x: float, y: float, w: float, d: float, facing: str, room: Room
     }[facing]
 
 
+def _door_anchor(room: Room) -> tuple[float, float] | None:
+    """Where a person is standing the moment they are inside the room.
+
+    The centre of the leaf, half a shoulder in. Used to push the unspecialised
+    roles to the far end of the room rather than into the corner the door
+    opens into — see the generic branch of `_positions.rank`.
+    """
+    if not room.doors:
+        return None
+    door = room.doors[0]
+    inset = SHOULDER_WIDTH_CM / 2
+    middle = door.offset_cm + door.width_cm / 2
+    return {
+        "N": (middle, inset), "S": (middle, room.depth_cm - inset),
+        "W": (inset, middle), "E": (room.width_cm - inset, middle),
+    }[door.wall]
+
+
+def _from_entrance(box: tuple, entrance: tuple[float, float] | None) -> float:
+    """How far this position is from the doorway. 0 when the room has no door
+    on record, which leaves the ordering exactly as it was."""
+    if entrance is None:
+        return 0.0
+    px, py = entrance
+    return math.hypot(max(0.0, box[0] - px, px - box[2]),
+                      max(0.0, box[1] - py, py - box[3]))
+
+
+def _in_the_way(box: tuple, role: str, room: Room, placed: list[Placement],
+                swings: list[tuple]) -> int:
+    """How much this position is in the way, as a small integer, low is better.
+
+    The cheap stand-in for the `circulation` rule, and the reason the position
+    search can satisfy it. Running the real flood fill per candidate is not an
+    option: it costs about 0.2ms and `_positions` ranks on the order of a
+    thousand candidates per product per slot, which is a hundred times the
+    budget for the whole build.
+
+    Three things at once, ordered so that a candidate which cannot possibly
+    validate always sorts behind one which might:
+
+        OVERLAPPING    it overlaps something already in the room
+        IN_THE_SWING   it stands in a door's swing
+        otherwise      the floor it strands, in `STRANDED_BUCKET_CM2` units:
+                       for each side that opens onto a gap too narrow to walk
+                       through, how much floor is in that gap
+
+    A gap is dead exactly when it is bigger than nothing and smaller than a
+    shoulder. Flush against the wall is good design and good circulation; 90cm
+    of clear floor is a walkway; the 40cm between the bookshelf at x=0-80 and
+    the coffee table at x=120 in unit01/living_dining/15000/industrial+
+    mid_century is neither, and it is what cut 96% of that room off from its
+    own front door.
+
+    The two large penalties are not new rules — `validate_layout` already
+    refuses both — they are ordering. Measured on unit01/bedroom/30000/
+    modern+luxury: the reading lamp's branch ranks on distance to the nearest
+    seat, a position INSIDE the bed scores a distance of zero, and the search
+    worked through 138 candidates that overlapped the bed or blocked the door
+    before reaching one that held. That is the same defect the bedside branch
+    documents and had already fixed for itself, showing up again one slot on.
+
+    Stranded AREA rather than a count of stranded sides, because a count
+    cannot tell a 9cm gap from a 39cm one and the difference decides whether
+    the next slot has anywhere to go. Same room, same 26x175cm reading lamp:
+    at (285,130) it leaves ONE dead gap — 24cm to the east wall down its whole
+    length, 4,200cm² nobody can stand on — and at (225,0) it leaves TWO, 9cm
+    against the bed and 39cm against the wardrobe, 2,070cm² between them.
+    Ranked by count the planner took (285,130), one dead side beating two, and
+    that position runs the full height of the east strip: it is why the
+    premium tier's armchair had nowhere to go in nine bedrooms. Ranked by area
+    it takes (225,0), the east side stays one 84cm-wide piece, and the
+    armchair gets in.
+
+    Bucketed rather than raw so that ties survive. This term sits ahead of the
+    branch tie-breaks that keep an armchair near its sofa and a lamp near its
+    seat, and a continuous score would quietly become the only one that ever
+    decides anything.
+
+    Not a substitute for the rule: it cannot see that a gap SEVERS anything,
+    only that nobody can use it, so `_you_can_walk_around_it` still decides.
+    This stops the search offering a thousand arrangements that cannot hold
+    before it reaches one that can.
+    """
+    x0, y0, x1, y1 = box
+    for swing in swings:
+        if not (x1 <= swing[0] or swing[2] <= x0 or y1 <= swing[1] or swing[3] <= y0):
+            return IN_THE_SWING
+    # Nearest thing in the way on each side, and how much of that side it
+    # faces. The room's own walls start as the blocker, spanning the whole side.
+    across, down = x1 - x0, y1 - y0
+    gaps = {"W": (x0, down), "E": (room.width_cm - x1, down),
+            "N": (y0, across), "S": (room.depth_cm - y1, across)}
+    for other in placed:
+        if not other.dims.known:
+            continue
+        if (other.dims.h or 0) <= FLOOR_COVERING_MAX_H_CM:
+            continue                       # a rug is walked over, not around
+        # The 40-45cm between a sofa and its coffee table is the arrangement
+        # working, and `sofa_to_coffee_table` requires it. Nobody walks through
+        # it and nobody should: counting it here would put the same penalty on
+        # every legal coffee-table position and on none of the illegal ones. A
+        # dining chair overlapping its own table is the same case, and the one
+        # place in this engine where overlap is CORRECT. The same exemption
+        # `_front_gap` already makes, for the same pairs.
+        if any({role, other.resolved_role()} == pair for pair in COMPANION_PAIRS):
+            continue
+        ox0, oy0, ox1, oy1 = other.footprint()
+        shared_y = min(y1, oy1) - max(y0, oy0)
+        shared_x = min(x1, ox1) - max(x0, ox0)
+        if shared_y > 0:
+            if ox1 <= x0 and x0 - ox1 < gaps["W"][0]:
+                gaps["W"] = (x0 - ox1, shared_y)
+            elif ox0 >= x1 and ox0 - x1 < gaps["E"][0]:
+                gaps["E"] = (ox0 - x1, shared_y)
+            elif shared_x > 0:
+                return OVERLAPPING
+        if shared_x > 0:
+            if oy1 <= y0 and y0 - oy1 < gaps["N"][0]:
+                gaps["N"] = (y0 - oy1, shared_x)
+            elif oy0 >= y1 and oy0 - y1 < gaps["S"][0]:
+                gaps["S"] = (oy0 - y1, shared_x)
+    stranded = sum(gap * extent for gap, extent in gaps.values()
+                   if 0 < gap < SHOULDER_WIDTH_CM)
+    return int(stranded / STRANDED_BUCKET_CM2)
+
+
 def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]):
     """Candidate positions on a coarse grid, ordered by what the role wants.
 
@@ -529,6 +682,14 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
     # like a mistake.
     twins = [p for p in placed if p.resolved_role() == role]
 
+    # A rug is not an obstacle, so it can neither create a dead gap nor sit in
+    # one — and it is allowed under the door swing and under the furniture.
+    # Computing the term for it would be noise ranked ahead of the coverage
+    # term that actually places a rug.
+    floor_covering = (product.dims.h or 0) <= FLOOR_COVERING_MAX_H_CM
+    swings = [_swing_box(door, room) for door in room.doors if door.swing == "in"]
+    entrance = _door_anchor(room)
+
     def rank(candidate):
         x, y, facing = candidate
         touching = x <= 1 or y <= 1 or x >= max_x - 1 or y >= max_y - 1
@@ -537,6 +698,14 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
         spread = -min((abs(x - p.x) + abs(y - p.y) for p in twins), default=0.0)
 
         box = (x, y, x + w, y + d)
+        # Where the `circulation` rule enters the search. Ranked directly after
+        # whatever each branch treats as its hard constraint and ahead of every
+        # cosmetic tie-break, on the same reasoning the armchair branch already
+        # gives for `_looks_at`: a position that cannot validate must not be
+        # offered before one that can, or the slot burns its whole position
+        # budget and comes back "could not be placed anywhere in the room".
+        pinch = (0 if floor_covering
+                 else _in_the_way(box, role, room, placed, swings))
 
         if role in {"sofa", "armchair"}:
             # Back to a wall, then as much open space in front as the room allows.
@@ -567,9 +736,9 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
                 # how the bedside slot burned its whole position budget.
                 anchor = sofas[0] if sofas else beds[0]
                 ax, ay, *_ = anchor.footprint()
-                return (spread, not _looks_at(box, facing, focal), not back_to_wall,
-                        abs(x - ax) + abs(y - ay))
-            return (spread, not back_to_wall, -front, x + y)
+                return (spread, not _looks_at(box, facing, focal), pinch,
+                        not back_to_wall, abs(x - ax) + abs(y - ay))
+            return (spread, not back_to_wall, pinch, -front, x + y)
         if role == "tv_console" and anchors:
             # A console used to fall through to the generic branch, which knows
             # only about walls and the origin: warm+minimal put a 40cm console
@@ -584,7 +753,7 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
                       _gap_between(box, s.footprint())) for s in anchors]
             watchable = any(b > 0 and g >= TV_VIEWING_MIN_CM for b, g in bands)
             return (spread, not watchable,
-                    not _looks_at(box, facing, anchors, limit=None),
+                    not _looks_at(box, facing, anchors, limit=None), pinch,
                     not touching, -max(b for b, _ in bands), x + y)
         if role == "floor_lamp" and seats:
             # Same generic-branch failure, and the most common of the four: 73
@@ -595,7 +764,15 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
             # pushed away from the first — the rule only ever asked for one
             # lamp to be within reach, and a branch that dragged both to the
             # same sofa would undo the twins logic on purpose.
-            return (spread, min(_gap_between(box, s.footprint()) for s in seats),
+            #
+            # The raw distance used to be the whole term, which left `pinch`
+            # nowhere useful to sit: no two candidates are the same distance
+            # from a seat, so a circulation term ranked after it could never
+            # break a tie. What the rule actually demands is a bound, not a
+            # minimum, so the bound leads and the distance stays as the
+            # tie-break underneath the dead-gap count.
+            nearest = min(_gap_between(box, s.footprint()) for s in seats)
+            return (spread, nearest > LAMP_REACH_CM, pinch, nearest,
                     not touching, x + y)
         if role == "rug" and group_box is not None:
             # A rug is laid under the group, so rank on how much of the group
@@ -620,7 +797,7 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
             tucked = (_span_overlap(box, table, "x")
                       * _span_overlap(box, table, "y")) / (w * d or 1)
             return (spread, not _faces_centre(box, facing, table),
-                    _gap_between(box, table), tucked, x + y)
+                    _gap_between(box, table), pinch, tucked, x + y)
         if role in BEDSIDE_ROLES and beds:
             # A bedside table has to end up within arm's reach of the pillow,
             # and the generic wall-hugging order never got near it: every
@@ -636,16 +813,47 @@ def _positions(room: Room, product: Product, slot: dict, placed: list[Placement]
             inside = not (x + w <= bx0 or x >= bx1 or y + d <= by0 or y >= by1)
             near = (max(bx0 - (x + w), x - bx1, 0.0)
                     + max(by0 - (y + d), y - by1, 0.0))
-            return (spread, 1 if inside else 0, near, x + y)
+            # Within arm's reach is the bound the rule states, so it leads and
+            # `pinch` sits above the raw distance — the same reshuffle the lamp
+            # branch needed, and for the same reason.
+            return (spread, 1 if inside else 0, near > BEDSIDE_REACH_CM, pinch,
+                    near, x + y)
         if role == "coffee_table" and anchors:
             # As close to the seating as the rules permit.
             ax, ay, *_ = anchors[0].footprint()
-            return (spread, abs(x - ax) + abs(y - ay), 0)
+            return (spread, abs(x - ax) + abs(y - ay), pinch, 0)
         if role == "dining_table" and anchors:
             # The other end of the room from the seating group.
             ax, ay, *_ = anchors[0].footprint()
-            return (spread, -(abs(x - ax) + abs(y - ay)), 0)
-        return (spread, not touching, x + y)
+            return (spread, -(abs(x - ax) + abs(y - ay)), pinch, 0)
+        # The generic branch: the BED, a bookshelf, a wardrobe, a side table
+        # with no bed to sit beside.
+        #
+        # `x + y` ascending is the whole of what used to order these, and it
+        # drags every unspecialised role into the (0,0) corner — which in this
+        # home is the corner the door opens into, because `_default_door` puts
+        # every door on the north wall 30cm from the west corner. The reference
+        # plan stacked an armchair at (0,90) and a bookshelf at (0,135) there,
+        # and the 40cm those two left between themselves and the coffee table
+        # is what severed the room.
+        #
+        # Distance from the door replaces it, descending: put the piece at the
+        # far end and the way in stays open. This matters most for the piece
+        # nothing else has an opinion about and everything else is arranged
+        # around — the bed, which is recipe priority 1 and has no branch of its
+        # own. In unit01's 335x305 bedroom `x + y` pinned a 216x163 bed at
+        # (0,75), flush into the door corner, which leaves a 119cm strip down
+        # the east side and a 67cm one along the south; once the 26x175cm
+        # reading lamp takes its place in the east strip, the room is two
+        # single-file corridors and the premium tier's armchair has nowhere to
+        # stand that does not sever one of them. Ranked by distance from the
+        # door the same bed goes to the south wall, the whole north half stays
+        # in one piece, and the armchair sits in it.
+        #
+        # `x + y` survives as the last tie-break, where it belongs: keeping the
+        # search deterministic rather than deciding the layout.
+        return (spread, pinch, not touching, -_from_entrance(box, entrance),
+                x + y)
 
     grid = [(x, y, f) for x in xs for y in ys for f in slot["facings"]]
     yield from sorted(grid, key=rank)
@@ -674,15 +882,115 @@ def auto_plan(
     plus that slot's share of the headroom. If there is no headroom, or no slot
     is eligible for any, the first plan is returned unchanged rather than
     recomputed to the same answer.
+
+    Between the two, a slot that could not be placed gets one more go at a
+    different placement ORDER — see `_promoting_what_would_not_fit`.
     """
     natural = _plan_once(unit, room_name, budget_sar, style, catalog,
                          max_positions, targets={})
+    natural, order = _promoting_what_would_not_fit(
+        natural, unit, room_name, budget_sar, style, catalog, max_positions)
     targets = _headroom_targets(natural, budget_sar)
     if not targets:
         return natural
     return _plan_once(unit, room_name, budget_sar, style, catalog,
-                      max_positions, targets=targets,
+                      max_positions, targets=targets, order=order,
                       natural_picks={i.slot_id: i.asin for i in natural.placed})
+
+
+def _promoting_what_would_not_fit(
+    plan: Plan,
+    unit: str,
+    room_name: str,
+    budget_sar: float,
+    style: list[str] | None,
+    catalog: list[Product] | None,
+    max_positions: int,
+) -> tuple[Plan, tuple[str, ...] | None]:
+    """Retry a slot the room ran out of space for, placed earlier.
+
+    Greedy placement is order-dependent, and this module has said so from the
+    beginning: "the first valid sofa position was against the north wall, which
+    satisfied every rule and left nowhere for the coffee table that comes
+    next". `_positions` answers that by ranking better. Ranking cannot answer
+    it when the answer is that the piece needed to be placed BEFORE the pieces
+    now in its way — no ordering of positions helps a slot with no valid
+    position left, and the search has no way back.
+
+    That became load-bearing with `circulation`. A bedroom is a 335x305 room
+    holding a 216x163 bed, and the premium tier wants six more pieces in it;
+    once the room also has to stay walkable, the order the recipe happens to
+    list those six in decides whether the last one fits. Measured across the
+    200 exported configurations, the recipe order left nine bedrooms with no
+    armchair position at all — and randomised restarts over the same grid, the
+    same products and the same rules seat an armchair in every one of those
+    rooms at 100%, 99% and 96.9% coverage. The furniture fits; the order did
+    not.
+
+    So: any slot that failed at the PLACEMENT stage is moved earlier and the
+    room is planned again, ONE STEP AT A TIME, and the first order that fills
+    more slots than the recipe's own wins. A step at a time rather than
+    straight to the front because the promotion has to disturb as little as
+    possible: sent all the way to second place in unit01/bedroom/30000/
+    modern+luxury the armchair does get in, and the reading light, the bedside
+    table and the shelving all then fail — a 4-slot room in place of a 6-slot
+    one. The smallest promotion that works is the one that costs least.
+
+    A retry is kept only if it fills strictly more slots, so this can never
+    cost a plan anything, and the loser is discarded rather than merged — a
+    plan is a whole arrangement and half of one is not a layout. Every
+    candidate order is still planned by the same search under the same rules,
+    so nothing here waves a slot through.
+
+    Deliberately a walk up one recipe and not a search over orders. This is
+    already the point where a reader should ask whether greedy placement is the
+    right shape; the honest answer is that it is not, and a proper backtracking
+    search is the change this file eventually wants.
+    """
+    base = [s["slot_id"] for s in
+            sorted(slots_for_budget(room_name, budget_sar)[0],
+                   key=lambda s: s["priority"])]
+    stuck: list[str] = []
+    displaced = _could_not_be_placed(plan)
+
+    for _round in range(PROMOTION_ROUNDS):
+        if displaced <= set(stuck):
+            break
+        stuck = [s for s in base if s in displaced or s in stuck]
+        movable = [s for s in base if s not in stuck]
+
+        # Insert the stuck slots one place earlier each time. Never at index 0:
+        # the anchor stays first because every other branch in `_positions` is
+        # written relative to it, and an armchair placed before there is a sofa
+        # or a bed to face has nothing to be turned toward — then
+        # `_seat_has_a_focal_point` refuses every position it tries.
+        for cut in range(len(movable) - 1, 0, -1):
+            order = tuple(movable[:cut] + stuck + movable[cut:])
+            if order == tuple(base):
+                continue
+            retried = _plan_once(unit, room_name, budget_sar, style, catalog,
+                                 max_positions, targets={}, order=order)
+            if len(retried.placed) > len(plan.placed):
+                return retried, order
+            # No better, but note what THIS order could not place. Promoting
+            # one slot routinely displaces another, and the next round asks for
+            # both. unit01/bedroom/30000/modern+luxury is the case that needs
+            # it: the recipe order fits six pieces and no armchair, promoting
+            # the armchair fits six and no bedside table, and promoting the two
+            # together fits all seven.
+            displaced |= _could_not_be_placed(retried)
+    return plan, None
+
+
+def _could_not_be_placed(plan: Plan) -> set[str]:
+    """Slots the room had no room for, as opposed to no budget or no stock.
+
+    Only a placement failure is worth reordering for. A slot whose candidates
+    were all too expensive, or all undeliverable, will fail identically
+    wherever it sits in the order.
+    """
+    return {slot.slot_id for slot in plan.unfilled
+            if any(r.get("stage") == "placement" for r in slot.rejected)}
 
 
 def _headroom_targets(natural: Plan, budget_sar: float) -> dict[str, float]:
@@ -723,12 +1031,19 @@ def _plan_once(
     max_positions: int,
     targets: dict[str, float],
     natural_picks: dict[str, str] | None = None,
+    order: tuple[str, ...] | None = None,
 ) -> Plan:
     home = load_home()
     spec = home.unit(unit).room(room_name)
     room = spec.to_room()
     catalog = catalog if catalog is not None else parse_capture()
     recipe, locked = slots_for_budget(room_name, budget_sar)
+    if order:
+        # A placement order `_promoting_what_would_not_fit` found works better
+        # than the recipe's own. Only the ORDER changes: the same slots, the
+        # same candidates, the same rules.
+        rank = {slot_id: i for i, slot_id in enumerate(order)}
+        recipe = sorted(recipe, key=lambda s: rank.get(s["slot_id"], len(rank)))
 
     plan = Plan(
         unit=unit, room=room_name, budget_sar=budget_sar,

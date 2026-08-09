@@ -700,6 +700,56 @@ class TestEveryNewRuleShipsWithSomewhereToPutTheFurniture:
         assert "lounge_chair" in placed, "the armchair was deleted, not placed"
         assert premium.validation["status"] == "pass", premium.validation["reasons"]
 
+    def test_every_room_the_planner_furnishes_can_be_walked_around(self):
+        """The circulation rule's half of this class's contract.
+
+        `validate_layout` rejecting unwalkable rooms is worth nothing on its own
+        — the planner would simply return fewer pieces of furniture, which is
+        what `bedside_reach` did. What this asserts is that the position search
+        can actually FIND walkable arrangements, for every room, every tier and
+        both ends of the style range.
+
+        Measured before the `_positions` change, over all 200 exported
+        configurations: median coverage 15.3%, minimum 3.5%, and 141 of 200
+        below half the floor. Every fully-furnished living/dining room in the
+        corpus — 9 and 11 items — scored under 6%.
+        """
+        from app.geometry import CIRCULATION_MIN_COVERAGE, circulation_map
+
+        for style in (["warm", "minimal"], ["industrial", "mid_century"]):
+            for unit, room_name in PLANNABLE:
+                for tier in BUDGET_TIERS:
+                    plan = auto_plan(unit, room_name, tier["sar"], style)
+                    room = load_home().unit(unit).room(room_name).to_room()
+                    circ = circulation_map(room, [
+                        Placement(i.asin, Dims(i.dims_cm["w"], i.dims_cm["d"],
+                                               i.dims_cm["h"]),
+                                  x=i.x, y=i.y, facing=i.facing, role=i.role)
+                        for i in plan.placed
+                    ])
+                    assert circ.coverage >= CIRCULATION_MIN_COVERAGE, (
+                        f"{unit}/{room_name}/{tier['id']}/{style}: only "
+                        f"{circ.coverage:.1%} of the floor is reachable from "
+                        f"the door ({circ.reachable_cells}/"
+                        f"{circ.passable_cells} cells)")
+
+    def test_the_room_the_defect_was_reported_against_is_walkable_now(self):
+        """unit01 living_dining 15000 industrial+mid_century — the plan in the
+        report, which scored 139 reachable cells out of 3,270."""
+        from app.geometry import circulation_map
+
+        plan = auto_plan("unit01", "living_dining", 15000,
+                         ["industrial", "mid_century"])
+        room = load_home().unit("unit01").room("living_dining").to_room()
+        circ = circulation_map(room, [
+            Placement(i.asin, Dims(i.dims_cm["w"], i.dims_cm["d"], i.dims_cm["h"]),
+                      x=i.x, y=i.y, facing=i.facing, role=i.role)
+            for i in plan.placed
+        ])
+        assert circ.reachable_cells > 1000, (
+            f"{circ.reachable_cells}/{circ.passable_cells} cells reachable")
+        assert plan.validation["status"] == "pass", plan.validation["reasons"]
+
     def test_no_tier_of_any_room_lost_a_slot_to_the_new_rules(self):
         """The count that matters. A rule that improves every layout it allows
         and quietly drops the ones it does not has made the room worse."""
