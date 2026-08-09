@@ -37,11 +37,14 @@ swap path is freed from that.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from app.catalog import parse_capture
@@ -348,65 +351,101 @@ def publish_trace() -> int:
     return len(runs)
 
 
+@contextlib.contextmanager
+def _only_one_build_at_a_time():
+    """A lock file beside the output, removed on the way out.
+
+    Not a mutex across machines and not trying to be — this exists because
+    several agents ran the exporter at once on one checkout.
+    """
+    lock = OUT.parent / ".export_static.lock"
+    fd = None
+    for attempt in range(600):                      # up to ten minutes
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            if attempt == 0:
+                print("another export is running; waiting for it to finish...",
+                      flush=True)
+            time.sleep(1)
+    if fd is None:
+        raise SystemExit(f"{lock} held for ten minutes. If no build is running, "
+                         f"delete it.")
+    try:
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
 def main() -> None:
-    if OUT.exists():
-        shutil.rmtree(OUT)
-    OUT.mkdir(parents=True)
+    # One build at a time. `rmtree` then rebuild is fine alone and lethal in
+    # parallel: two concurrent runs delete each other's files mid-write, and
+    # the failures do not look like a race — they look like a missing page.
+    # Three separate builds died on FileNotFoundError / "Directory not empty"
+    # during one session, and a served site 404'd on a page that was in the
+    # tree a second earlier. Cheap to prevent, expensive to diagnose.
+    with _only_one_build_at_a_time():
+        if OUT.exists():
+            shutil.rmtree(OUT)
+        OUT.mkdir(parents=True)
 
-    stats = build_data()
-    minify_css()
-    esbuild_note = bundle_js()
+        stats = build_data()
+        minify_css()
+        esbuild_note = bundle_js()
 
-    # One bundled module, no import map, relative paths.
-    html = (SRC / "index.html").read_text(encoding="utf-8")
-    html = html.replace('<link rel="stylesheet" href="/static/studio.css">',
-                        '<link rel="stylesheet" href="./studio.css">')
-    start = html.index('<script type="importmap">')
-    end = html.index("</script>", start) + len("</script>")
-    html = html[:start].rstrip() + "\n" + html[end:].lstrip()
-    html = html.replace('<script type="module" src="/static/studio.js"></script>',
-                        '<script type="module" src="./studio.js"></script>')
-    html = html.replace('<html lang="en">', '<html lang="en" data-mode="static">')
-    html = html.replace('href="/static/trace.html"', 'href="./trace.html"')
-    html = html.replace(
-        '<span class="sub">plan a room, swap anything, every verdict from the Python engine</span>',
-        '<span class="sub">static build — every verdict precomputed by app/geometry.py, '
-        'not recalculated in the browser</span>')
-    (OUT / "index.html").write_text(html, encoding="utf-8")
-    (OUT / ".nojekyll").write_text("", encoding="utf-8")
-    n_runs = publish_trace()
+        # One bundled module, no import map, relative paths.
+        html = (SRC / "index.html").read_text(encoding="utf-8")
+        html = html.replace('<link rel="stylesheet" href="/static/studio.css">',
+                            '<link rel="stylesheet" href="./studio.css">')
+        start = html.index('<script type="importmap">')
+        end = html.index("</script>", start) + len("</script>")
+        html = html[:start].rstrip() + "\n" + html[end:].lstrip()
+        html = html.replace('<script type="module" src="/static/studio.js"></script>',
+                            '<script type="module" src="./studio.js"></script>')
+        html = html.replace('<html lang="en">', '<html lang="en" data-mode="static">')
+        html = html.replace('href="/static/trace.html"', 'href="./trace.html"')
+        html = html.replace(
+            '<span class="sub">plan a room, swap anything, every verdict from the Python engine</span>',
+            '<span class="sub">static build — every verdict precomputed by app/geometry.py, '
+            'not recalculated in the browser</span>')
+        (OUT / "index.html").write_text(html, encoding="utf-8")
+        (OUT / ".nojekyll").write_text("", encoding="utf-8")
+        n_runs = publish_trace()
 
-    eager = eager_chunks()
-    app_bytes = (OUT / "studio.js").stat().st_size + sum(c.stat().st_size for c in eager)
-    app_kb = app_bytes / 1024
-    total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file()) / 1024
-    first_paint = (
-        (OUT / "index.html").stat().st_size
-        + app_bytes
-        + (OUT / "studio.css").stat().st_size
-        + (OUT / "data" / "index.json").stat().st_size
-        + (OUT / "data" / "plans"
-           / f"{slug('unit01', 'living_dining', ['warm', 'minimal'], DEFAULT_TIER)}.json"
-           ).stat().st_size
-    ) / 1024
+        eager = eager_chunks()
+        app_bytes = (OUT / "studio.js").stat().st_size + sum(c.stat().st_size for c in eager)
+        app_kb = app_bytes / 1024
+        total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file()) / 1024
+        first_paint = (
+            (OUT / "index.html").stat().st_size
+            + app_bytes
+            + (OUT / "studio.css").stat().st_size
+            + (OUT / "data" / "index.json").stat().st_size
+            + (OUT / "data" / "plans"
+               / f"{slug('unit01', 'living_dining', ['warm', 'minimal'], DEFAULT_TIER)}.json"
+               ).stat().st_size
+        ) / 1024
 
-    print(f"plans        {stats['plans']:>5}   {stats['plan_kb']:>8.0f} KB")
-    print(f"whole flats  {stats['flats']:>5}")
-    print(f"swaps        {stats['swaps']:>5}   {stats['swap_kb']:>8.0f} KB  "
-          f"in {stats['swap_files']} content-addressed files "
-          f"for {stats['plans']} contexts, fetched on demand")
-    print(f"studio.js (entry)      {app_kb:>8.0f} KB  {esbuild_note}")
-    for c in sorted(OUT.glob("chunk-*.js")):
-        how = ("blocking: imported by the entry" if c in eager
-               else "lazy: fetched on demand")
-        print(f"  {c.name:<20} {c.stat().st_size / 1024:>8.0f} KB  {how}")
-    trace_kb = sum(
-        (OUT / n).stat().st_size for n in ("trace.html", "trace.js", "trace.css")
-    ) / 1024
-    print(f"site total             {total:>8.0f} KB")
-    print(f"/trace                 {trace_kb:>8.0f} KB  {n_runs} run file(s), separate page, "
-          f"not in the studio's first paint")
-    print(f"FIRST PAINT            {first_paint:>8.0f} KB  (html + js + css + index + one plan)")
+        print(f"plans        {stats['plans']:>5}   {stats['plan_kb']:>8.0f} KB")
+        print(f"whole flats  {stats['flats']:>5}")
+        print(f"swaps        {stats['swaps']:>5}   {stats['swap_kb']:>8.0f} KB  "
+              f"in {stats['swap_files']} content-addressed files "
+              f"for {stats['plans']} contexts, fetched on demand")
+        print(f"studio.js (entry)      {app_kb:>8.0f} KB  {esbuild_note}")
+        for c in sorted(OUT.glob("chunk-*.js")):
+            how = ("blocking: imported by the entry" if c in eager
+                   else "lazy: fetched on demand")
+            print(f"  {c.name:<20} {c.stat().st_size / 1024:>8.0f} KB  {how}")
+        trace_kb = sum(
+            (OUT / n).stat().st_size for n in ("trace.html", "trace.js", "trace.css")
+        ) / 1024
+        print(f"site total             {total:>8.0f} KB")
+        print(f"/trace                 {trace_kb:>8.0f} KB  {n_runs} run file(s), separate page, "
+              f"not in the studio's first paint")
+        print(f"FIRST PAINT            {first_paint:>8.0f} KB  (html + js + css + index + one plan)")
 
 
 if __name__ == "__main__":
