@@ -11,6 +11,10 @@
  */
 
 import { UNKNOWN_COLOUR } from './palette.js';
+// esc/money/measure/humaniseWithin/priceGap/swatch live in text.js so that
+// brief.js — which studio.js loads lazily — can share the exact same ones
+// rather than carry a second copy into its chunk.
+import { esc, money, measure, humaniseWithin, priceGap, swatch } from './text.js';
 
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -142,7 +146,7 @@ function accessBadges(access) {
   return out.join(' ');
 }
 
-function money(n) { return Math.round(n).toLocaleString(); }
+
 
 function decisionHtml(i) {
   const d = i.decision;
@@ -188,15 +192,6 @@ function decisionHtml(i) {
  * `size` is for the brief, which shows the same dot inside the modal: the
  * stylesheet sizes `.item .swatch`, and out there it would collapse to
  * nothing. One function either way, so the two dots cannot drift apart. */
-const INLINE_DOT = 'display:inline-block;width:11px;height:11px;border-radius:3px';
-function swatch(i, size = '') {
-  return i.colour_hex
-    ? `<span class="swatch" style="background-color:${i.colour_hex};${size}"
-             title="colour published by the listing"></span>`
-    : `<span class="swatch unknown" style="background-color:${UNKNOWN_COLOUR};${size}"
-             title="the listing publishes no colour"></span>`;
-}
-
 function paintPanel(plan) {
   $('#items').innerHTML = plan.placed.map((i) => `
     <div class="item" data-slot="${i.slot_id}" data-role="${i.role}"
@@ -283,35 +278,9 @@ function highlight(slot, on) {
   state.viewer?.highlight(slot, on);
 }
 
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
-  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-
-/** Reasons come back naming items by the id they were sent with — an ASIN.
- *  "Only 35cm between B0FR3WVLTS and B0H8PQ9KDJ" is precise and unreadable.
- *  Swap the codes for the slot names a person can actually see on screen. */
-function humaniseWithin(text, items) {
-  let out = String(text);
-  for (const item of items ?? []) {
-    if (item.asin) out = out.replaceAll(item.asin, `the ${item.slot_id.replace(/_/g, ' ')}`);
-    // Reasons also name items by slot_id, which is only unique inside a room.
-    out = out.replaceAll(item.slot_id, item.slot_id.replace(/_/g, ' '));
-  }
-  return out;
-}
-
 function humanise(text) {
   return humaniseWithin(text, state.plan?.placed ?? []);
 }
-
-/** Put the measurements in a sentence the engine wrote into `<code>`.
- *
- *  A number buried in prose reads as a claim; a number in a monospace box
- *  reads as something you can go and check with a tape measure, which is what
- *  every one of these is. Escapes FIRST — this inserts markup, so it must
- *  never be handed text that has already been marked up. */
-const measure = (text) => esc(text).replace(
-  /\d[\d,]*(?:\.\d+)?(?:\s?[x×]\s?\d[\d,]*(?:\.\d+)?)*\s?(?:cm|SAR)\b/g,
-  (m) => `<code>${m}</code>`);
 
 // ---------------------------------------------------------------- the agent log
 /* Who decided what, in the words of the agent that owns the decision.
@@ -615,8 +584,18 @@ function nouraTurn(plan) {
 
   // An advisory is about the room, so it outranks the room's proportions: the
   // reader needs the caveat before the description it qualifies.
+  //
+  // It still has to say WHICH room, in that same first sentence. Three of the
+  // nine configurations in the test spread carry exactly one advisory and it
+  // is the same sentence in all three — a rug under the same N-wall door swing
+  // — so an opening that led with the advisory alone gave a 335x551 corridor,
+  // a 335x305 bedroom and a 427x305 bedroom the identical first line. The
+  // dimensions are the plan's own and cost nothing to keep.
+  const about = flat
+    ? `the layout for ${esc(flat.label)}`
+    : `this <code>${plan.room_cm.width}&times;${plan.room_cm.depth}&nbsp;cm</code> layout`;
   const advisoryLead = notes.length
-    ? `Before anything else about this layout: the engine left
+    ? `Before anything else about ${about}: the engine left
        ${notes.length} advisor${notes.length === 1 ? 'y' : 'ies'} on it —
        ${notes.map((n) => measure(flat ? n : humaniseWithin(n, plan.placed))).join(' ')} `
     : '';
@@ -747,7 +726,84 @@ function adamTurn(plan) {
     ${money(plan.budget_sar)} SAR${u && u.unspent_sar > 0
       ? `, leaving ${money(u.unspent_sar)} SAR I could not spend on anything that
          verified` : ''}.`;
-  return agentTurn('adam', `${lead}<br>${restLine}<br>${tail}`);
+  return agentTurn('adam', `${lead}<br>${restLine}<br>${tail}${slotRecordHtml(plan)}`);
+}
+
+/* ----------------------------------------------- the record, slot by slot
+ *
+ * Three questions per placed item, and the answers to all three are already on
+ * disk before anyone asks:
+ *
+ *   why this one won   `decision.chose_because` and `considered`, plus the
+ *                      spatial half in `placed_because` / `positions_tried`
+ *   what it beat       `decision.ranked_above` — the runners-up and their prices
+ *   what else you have `data/swaps/<swaps_ref>.json`, which carries a full
+ *                      engine verdict for every alternative in every slot
+ *
+ * The first two ride on the plan this page has already fetched, so they print
+ * here. The third does not, and deliberately stays where it is: a swap table is
+ * 48-670 KB and a candidate list a further ~15 KB per category, which for one
+ * living room is ~200 KB against a whole first paint of 68 KB. So the record
+ * ends at the control that already fetches them, and the attribute-by-attribute
+ * comparison and the alternatives with their real verdicts print in the brief
+ * behind it — per slot, on demand, which is what that data was split up for.
+ */
+/* The same row the product brief uses, so the record and the brief behind it
+ * share one label gutter instead of defining a second. */
+const recLine = (label, body) =>
+  `<div class="d-row"><span>${label}</span><div>${body}</div></div>`;
+
+function slotRecordHtml(plan) {
+  if (!plan.placed.length) return '';
+  const items = plan.placed.map((i) => {
+    const d = i.decision || {};
+    const lines = [];
+
+    lines.push(recLine('why this one', `${esc(d.chose_because ?? 'no reason recorded')}
+      — out of ${d.considered ?? 0} in the pool.`));
+
+    if (d.placed_because || d.positions_tried) {
+      lines.push(recLine('where it sits',
+        `${esc(d.placed_because ?? 'no position reason recorded')}`
+        + (d.positions_tried
+          ? ` <em>${d.positions_tried} position(s) tested for it.</em>` : '')));
+    }
+
+    // Labelled for what the field is rather than for what it is called. The
+    // planner writes the head of the ranked pool into `ranked_above`, and some
+    // of those scored above the winner and were thrown out before position was
+    // tried — the brief behind the button says which, per entry.
+    const above = d.ranked_above || [];
+    const thrownOut = new Set((d.rejected || []).map((r) => r.asin));
+    lines.push(recLine('up against', above.length
+      ? above.map((r) => `${esc(String(r.title).slice(0, 52))}
+          <em>${money(r.price_sar || 0)} SAR</em> — ${priceGap(r, i)}`
+          + (thrownOut.has(r.asin) ? ', thrown out on a measurement' : '')).join('<br>')
+      : 'nothing — it was the only candidate in the pool.'));
+
+    const rejected = d.rejected || [];
+    if (rejected.length) {
+      lines.push(recLine('ruled out', `${rejected.length} thrown out on a measurement
+        first — those are under fit-auditor below.`));
+    }
+
+    // Collapsed, and one <details> per slot rather than one around the lot.
+    // A premium living room fills eleven of these and running them all open put
+    // 1,300 words under Adam that a reader has to scroll past to reach the
+    // auditor. The summary carries the slot, the piece and the price, so the
+    // closed state is still the whole record at a glance — it is the reasoning
+    // that folds away, not the answer.
+    // Set tight on purpose. Indentation inside a template literal is not
+    // whitespace the minifier can remove — it is string content, and it ships.
+    return `<li><details><summary>`
+      + `<b>${slotWords(i.slot_id)}</b>`
+      + `<span class="sr-title">${esc(String(i.title).slice(0, 72))}</span>`
+      + `<span class="sr-price">${money(i.price_sar)} SAR</span>`
+      + `</summary>${lines.join('')}`
+      + `<button type="button" class="link sr-more" data-slot="${esc(i.slot_id)}">`
+      + `what separated them, and what else fits &rsaquo;</button></details></li>`;
+  });
+  return `<div class="slot-record"><ol>${items.join('')}</ol></div>`;
 }
 
 // Every cause the planner counts is already a phrase. Underscores out, and
@@ -873,11 +929,30 @@ function auditorTurn(plan) {
   return agentTurn('auditor', opening + scope, gotchas);
 }
 
+/* ---------------------------------------------------------------- the panel
+ *
+ * This is a decision RECORD, and it says so. The four agents genuinely own
+ * these decisions in this system's design — Zeina the brief, Noura the layout,
+ * Adam the sourcing, fit-auditor the rejections — so attributing each finding
+ * to the agent whose remit it falls under is accurate. Staging it as a
+ * conversation would not be: the plan is the output of a deterministic Python
+ * planner, and no turn in it ever happened in time. A synthetic thread would
+ * fabricate the one thing this project sells, which is that what you are shown
+ * actually occurred.
+ *
+ * The real thing exists and is linked instead of imitated: docs/demo-run.md and
+ * the debate section of SHOWCASE.md hold an actual multi-agent run, with real
+ * subagents, real MCP tool calls, and a real disagreement the sourcing agent
+ * won against the auditor.
+ */
 function agentLogHtml(plan, ctx) {
   const what = plan._flat ? `these ${plan._flat.rooms.length} rooms` : 'this room';
-  return `<p class="muted small">Four agents produced ${what}. Each speaks only for
-    the decisions the plan records as its own, and each leads with whatever this
-    plan did that the last one did not.</p>`
+  return `<p class="muted small"><b>Decision record</b> for ${what}, under the agent
+    whose remit each decision falls under. A log, not a transcript: nothing below was
+    said by anybody — <code>app/planner.py</code> wrote it and
+    <code>app/geometry.py</code> re-checked it. A real multi-agent exchange, with the
+    sourcing agent contradicting the auditor and turning out to be right, is in
+    <code>docs/demo-run.md</code> and <code>SHOWCASE.md</code>.</p>`
     + zeinaTurn(plan, ctx) + nouraTurn(plan) + adamTurn(plan) + auditorTurn(plan);
 }
 
@@ -891,6 +966,12 @@ function renderAgentLog(plan) {
   }
   host.classList.add('agent-log');
   host.innerHTML = agentLogHtml(plan, { style: state.style, tier: state.tier });
+  // The record ends at the two questions it deliberately does not answer
+  // inline — what each runner-up lost on, and what else fits — because both
+  // need files this page has not fetched. The button is where they get fetched.
+  host.querySelectorAll('.sr-more').forEach((b) => {
+    b.onclick = () => openBrief(b.dataset.slot);
+  });
 }
 
 // ---------------------------------------------------------------- swapping
@@ -938,121 +1019,67 @@ async function openPicker(slotId, role) {
 }
 
 // ---------------------------------------------------------------- the product brief
-/* Everything the plan knows about one item, including the parts it does not
- * know. It opens in the swap modal rather than a second overlay of its own:
- * one shell, one close button, one Escape key, and the swap flow untouched.
+/* Lives in brief.js and is fetched the first time a product is opened.
  *
- * The awkward rows are the point. 31 usable listings publish no colour and the
- * render draws them hatched; if the brief filled that gap in with a plausible
- * word, the picture and the page beside it would disagree and only one of them
- * would be honest.
- */
+ * It is the three parser glossaries plus the two derived rows — what the
+ * winner beat and on which term, and what else the engine verified would fit
+ * — and none of it is on screen until someone clicks. Deferring it is the same
+ * bargain viewer.js already takes with three.js: the plan, the verdicts and the
+ * decision record paint from bytes the page has, and the rest arrives when it
+ * is asked for. */
 
-const DIMS_MEANING = {
-  stated: 'the listing labelled its axes, so this is what the seller published',
-  parsed: 'read off an unlabelled field — the numbers are usually right, but which '
-        + 'one is the depth is a guess',
-  conflicted: 'two fields on the listing contradict each other, so the size is not believed',
-  missing: 'the listing publishes no dimensions at all',
-};
-
-const SOURCE_MEANING = {
-  attrs: "from the listing's own structured attribute field",
-  title: 'read out of the listing title, not a structured field',
-  conflicted: 'two fields on the listing state different values, so neither is used',
-  missing: 'not published',
-};
-
-/* Raw parser flags in front of a shopper are schema, not information.
- * test_studio.py derives the keys from the capture, so a new flag fails a test
- * rather than reaching a customer as `assumed_depth`. */
-const FLAG_MEANING = {
-  no_published_dimensions: 'The listing publishes no dimensions, so nothing about how it '
-    + 'fits can be claimed.',
-  implausible_price: 'The price is far outside the range for this category and no volume '
-    + 'of reviews vouches for it.',
-  implausible_for_category: 'The published dimensions are outside a plausible range for '
-    + 'this kind of furniture — most often a mislabelled axis.',
-  colour_conflict: 'Two colour fields on the listing disagree, so no colour is claimed.',
-  assumed_depth: 'Only two dimensions were published. The depth is an assumption, marked '
-    + 'here rather than buried.',
-  category_mismatch: 'The search returned it under this category, but the title parses as '
-    + 'something else.',
-  dimension_conflict: 'Two dimension fields on the listing contradict each other.',
-  unclassified: 'No category pattern matched the title, so it was kept under the category '
-    + 'the search returned it from.',
-};
-
-function briefHtml(i, plan) {
-  const rows = [];
-  const row = (label, value) =>
-    rows.push(`<div class="d-row"><span>${label}</span><div>${value}</div></div>`);
-
-  row('listing', `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.title)}</a>
-    <br><em>${esc(i.asin)}</em> on amazon.sa · <b>${money(i.price_sar)} SAR</b>`);
-
-  row('size', `<code>${i.dims_cm.w}&times;${i.dims_cm.d}&times;${i.dims_cm.h}&nbsp;cm</code>
-    · <b>${esc(i.dims_confidence)}</b><br>
-    ${esc(DIMS_MEANING[i.dims_confidence] ?? 'how this was obtained is not recorded')}`);
-
-  // The swatch is the same one the panel and the viewport use, so the three
-  // cannot drift apart on what "unknown" looks like.
-  row('colour', (i.colour_hex
-      ? `${swatch(i, INLINE_DOT)} <code>${esc(i.colour_hex)}</code>`
-      : `${swatch(i, INLINE_DOT)} <b>not published</b>`)
-    + `<br>${esc(SOURCE_MEANING[i.colour_source] ?? (i.colour_hex
-        ? 'published by the listing' : 'the listing states none'))}`
-    + (i.colour_hex ? '' : '. The render draws it in flat slate with a hatch for '
-      + 'exactly this reason — nothing here invents one.'));
-
-  row('material', (i.material ? `<b>${esc(i.material)}</b>` : '<b>not published</b>')
-    + `<br>${esc(SOURCE_MEANING[i.material_source] ?? (i.material
-        ? 'published by the listing' : 'the listing states none'))}`);
-
-  if (i.rating !== undefined || i.reviews !== undefined) {
-    row('reviews', i.rating
-      ? `${i.rating}★ from ${i.reviews} review${i.reviews === 1 ? '' : 's'}`
-      : 'no reviews');
+/** The two files the comparison and the alternatives are read out of. Neither
+ *  is fetched until a brief is actually opened: between them they are several
+ *  times the size of the plan, and the page paints without either. */
+async function briefExtras(item) {
+  const extras = { style: state.style, candidates: null, swaps: null,
+                   swapsMissing: !state.plan?.swaps_ref };
+  const ref = state.plan?.swaps_ref;
+  const [list, swaps] = await Promise.all([
+    item.category
+      ? api(`/plan/candidates/${item.category}`).catch(() => null) : null,
+    ref && STATIC ? json(`./data/swaps/${ref}.json`).catch(() => null) : null,
+  ]);
+  if (list?.items) {
+    extras.candidates = Object.fromEntries(list.items.map((c) => [c.asin, c]));
   }
-
-  if (Array.isArray(i.flags)) {
-    row('flagged', i.flags.length
-      ? i.flags.map((f) => `<i>${esc(f.replace(/_/g, ' '))}</i> — ${esc(FLAG_MEANING[f]
-          ?? 'a parser flag with no plain-language note yet')}`).join('<br>')
-      : 'nothing. This listing tripped none of the parser’s checks.');
-  }
-
-  const a = i.access || {};
-  const legs = a.reasons || [];
-  // On a failure the only line that matters is the segment that failed; on a
-  // pass, the legs that need a human to do something.
-  const failed = legs.filter((r) => /cannot|does not fit/i.test(r));
-  const notable = legs.filter((r) => /TIGHT|on its side|on end|swing/i.test(r));
-  const shown = failed.length ? failed : notable;
-  row('delivery', `<b>${esc(a.status ?? 'unverified')}</b>${a.measured_using
-      ? ` · measured ${esc(a.measured_using)}` : ''}<br>`
-    + (shown.length
-      ? shown.map((r) => measure(humaniseWithin(r, plan?.placed))).join('<br>')
-      : legs.length ? `all ${legs.length} legs of the route clear.`
-      : 'no route was checked, so nothing is claimed.'));
-
-  const d = i.decision || {};
-  row('why this one', `${esc(d.chose_because ?? 'no reason recorded')} ·
-    ${d.considered ?? 0} candidate(s) considered`
-    + ((d.ranked_above || []).length
-      ? `<br>ranked above:<br>${d.ranked_above.map((r) =>
-          `${esc(String(r.title).slice(0, 50))} <em>${money(r.price_sar || 0)} SAR</em>`)
-        .join('<br>')}` : ''));
-
-  return `<div class="detail" style="margin:12px 14px">${rows.join('')}</div>`;
+  extras.swaps = swaps;
+  if (!swaps) extras.swapsMissing = true;
+  return extras;
 }
+
+/* The brief module itself, fetched once and kept.
+ *
+ * A few KB over the network the first time a product is opened, and nothing on
+ * the paths that paint the page. If the chunk fails to load the modal says so
+ * rather than sitting empty — the same rule the viewport follows. */
+let briefModule = null;
+const loadBrief = () => (briefModule ??= import('./brief.js'));
 
 function openBrief(slotId) {
   const item = state.plan?.placed.find((p) => p.slot_id === slotId);
   if (!item) return;
-  $('#picker-title').textContent = slotId.replace(/_/g, ' ');
-  $('#picker-list').innerHTML = briefHtml(item, state.plan);
+  const title = slotId.replace(/_/g, ' ');
+  $('#picker-title').textContent = title;
+  $('#picker-list').innerHTML = '<p class="picker-msg">Loading the brief…</p>';
   $('#picker').hidden = false;
+  const stale = () => $('#picker').hidden || $('#picker-title').textContent !== title;
+
+  loadBrief().then(({ briefHtml }) => {
+    if (stale()) return;
+    // Everything the plan already holds paints now; the two heavier files fill
+    // in the last two rows when they land. A brief that waited for them would
+    // be a blank modal for as long as a 670 KB fetch takes.
+    $('#picker-list').innerHTML = briefHtml(item, state.plan, null);
+    return briefExtras(item).then((extras) => {
+      if (stale()) return;
+      $('#picker-list').innerHTML = briefHtml(item, state.plan, extras);
+    });
+  }).catch((err) => {
+    if (stale()) return;
+    $('#picker-list').innerHTML =
+      `<p class="picker-msg error">Could not load the brief — ${esc(err.message)}</p>`;
+  });
 }
 
 async function applySwap(slotId, pick) {
@@ -1368,10 +1395,13 @@ function finishRow(s) {
 
 /* Exported only so the tests can run them.
  *
- * The agent log and the brief are the two places this page writes prose, and
- * prose is the one thing a source-reading test cannot judge. Both are pure
+ * The decision record and the brief are the two places this page writes prose,
+ * and prose is the one thing a source-reading test cannot judge. Both are pure
  * functions of the plan precisely so a test can run them over real exported
  * plans in node and check that every measurement they print is in the JSON
  * they printed it from. Nothing in the page imports these.
+ *
+ * The brief's own builders are exported from brief.js, which the page loads
+ * lazily and the test harness imports directly.
  */
-export { agentLogHtml, briefHtml, flatten };
+export { agentLogHtml, flatten };

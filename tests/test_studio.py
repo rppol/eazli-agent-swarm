@@ -443,8 +443,13 @@ def test_the_studio_translates_asins_into_words_for_the_user():
 
     js = Path("app/static/studio.js").read_text(encoding="utf-8")
     assert "function humanise(" in js
-    # Every place a reason reaches the user must go through it.
-    assert "function humaniseWithin(" in js
+    # `humaniseWithin` moved to text.js when the brief was split out, because
+    # both sides of the split print engine reasons and there must be exactly
+    # one of it in the build. It is still the only way a reason reaches a
+    # reader, and studio.js still has to be wired to it.
+    assert "export function humaniseWithin(" in _studio_js()
+    imports = "\n".join(ln for ln in js.splitlines() if ln.startswith("import "))
+    assert "humaniseWithin" in imports, "studio.js does not import it"
     for site in ("humanise(first)", "humanise(r)", "humaniseWithin(text, r.placed)"):
         assert site in js, f"a reason path is missing humanise(): {site}"
 
@@ -640,9 +645,19 @@ def test_the_viewport_is_optional_scenery():
 # --------------------------------------------------------------------------
 
 def _studio_js() -> str:
+    """studio.js plus the two modules it was split into.
+
+    The per-item brief lives in brief.js and the shared text primitives in
+    text.js, both so that the brief can be a lazy chunk. Which file a builder
+    sits in is a loading decision, not a change of subject: every assertion
+    below is about what the page says, so the source it reads is the page's,
+    all three files of it. `_function_source` finds a function wherever it is.
+    """
     from pathlib import Path
 
-    return Path("app/static/studio.js").read_text(encoding="utf-8")
+    return "\n".join(
+        Path(f"app/static/{name}").read_text(encoding="utf-8")
+        for name in ("studio.js", "brief.js", "text.js"))
 
 
 def _function_source(js: str, name: str) -> str:
@@ -787,7 +802,12 @@ def test_the_brief_says_not_published_in_words():
     """31 usable listings publish no colour and the render draws them as
     unknown on purpose. A brief that quietly omitted the row would let the
     reader assume the render was being decorative."""
-    src = _function_source(_studio_js(), "briefHtml")
+    js = _studio_js()
+    # `what it beat` and `what else fits here` are rows of the brief built by
+    # their own functions, because both read files the brief itself does not
+    # fetch. They are still the brief as far as a reader is concerned.
+    src = "".join(_function_source(js, name)
+                  for name in ("briefHtml", "beatHtml", "alternativesHtml"))
     assert "not published" in src
     for expected in ("asin", "price_sar", "i.url", "dims_confidence",
                      "colour_source", "material_source", "flags", "rating",
@@ -813,16 +833,41 @@ const stub = new Proxy(function () {}, {
 });
 globalThis.document = stub;
 globalThis.addEventListener = () => {};
-const { agentLogHtml, briefHtml, flatten } = await import('./studio.mjs');
+const { agentLogHtml, flatten } = await import('./studio.mjs');
+// The brief is a lazily-imported module in the page too — openBrief() does
+// exactly this import the first time a product is clicked.
+const { briefHtml, separatedBy, targetOf,
+        EVIDENCE_FLOOR, PLAUSIBILITY_FLAGS } = await import('./brief.js');
 // `flatten` is what render() runs before anything downstream sees the plan,
 // and it is a no-op on a single room. Going through it here means a whole-flat
 // plan reaches the builders in the shape the page actually hands them, rather
 // than a second flattening written beside it that can drift.
 const plan = flatten(JSON.parse(readFileSync(process.argv[2], 'utf8')));
 const ctx = JSON.parse(process.argv[3]);
+// argv[4] is the two files a brief fetches for itself when it is opened: the
+// swap table for this plan and the catalogue list for each category in it.
+// Passed in rather than fetched, because the point of the split is that the
+// page never fetches them to paint.
+const extras = process.argv[4]
+  ? { ...JSON.parse(readFileSync(process.argv[4], 'utf8')), style: ctx.style }
+  : undefined;
 process.stdout.write(JSON.stringify({
   log: agentLogHtml(plan, ctx),
   briefs: plan.placed.map((i) => briefHtml(i, plan)),
+  full: extras ? plan.placed.map((i) => briefHtml(i, plan, extras)) : [],
+  // Every runner-up in the plan, with the term studio.js says separated it
+  // from the winner — so a Python test can re-derive the same thing from
+  // app.planner._score and refuse a disagreement.
+  separations: !extras ? [] : plan.placed.flatMap((i) =>
+    (i.decision?.ranked_above || []).map((r) => ({
+      slot_id: i.slot_id, winner: i.asin, runner: r.asin,
+      target: targetOf(i),
+      term: extras.candidates?.[i.asin] && extras.candidates?.[r.asin]
+        ? separatedBy(extras.candidates[i.asin], extras.candidates[r.asin],
+                      ctx.style, targetOf(i))
+        : null,
+    }))),
+  constants: { floor: EVIDENCE_FLOOR, plausibility: PLAUSIBILITY_FLAGS },
 }));
 """
 
@@ -839,24 +884,54 @@ def run_studio(tmp_path_factory):
     if node is None:
         pytest.skip("node is not installed")
 
+    d = tmp_path_factory.mktemp("studio")
+    # studio.js, the brief it loads lazily, and the text primitives both share.
+    # Copied side by side so the relative imports resolve exactly as they do in
+    # the browser — the harness must not be a fourth arrangement of the same
+    # code that can disagree with the built one.
     src = Path("app/static/studio.js").read_text(encoding="utf-8")
     assert "\nboot();" in src, "boot() moved — this harness needs updating"
+    assert "import('./brief.js')" in src, "the brief is no longer a lazy chunk"
     src = src.replace("\nboot();", "\n/* boot() is not called under test */")
-    src = src.replace("'./palette.js'",
-                      f"'{Path('app/static/palette.js').resolve().as_uri()}'")
-    d = tmp_path_factory.mktemp("studio")
     (d / "studio.mjs").write_text(src, encoding="utf-8")
+    for name in ("brief.js", "text.js", "palette.js"):
+        shutil.copy(Path("app/static") / name, d / name)
     (d / "run.mjs").write_text(DRIVER, encoding="utf-8")
 
-    def run(plan_path, style=(), tier=None):
-        out = subprocess.run(
-            [node, str(d / "run.mjs"), str(plan_path),
-             json.dumps({"style": list(style), "tier": tier})],
-            capture_output=True, text=True)
+    def run(plan_path, style=(), tier=None, extras=None):
+        argv = [node, str(d / "run.mjs"), str(plan_path),
+                json.dumps({"style": list(style), "tier": tier})]
+        if extras is not None:
+            blob = d / "extras.json"
+            blob.write_text(json.dumps(extras), encoding="utf-8")
+            argv.append(str(blob))
+        out = subprocess.run(argv, capture_output=True, text=True)
         assert out.returncode == 0, out.stderr
         return json.loads(out.stdout)
 
     return run
+
+
+def _extras_for(plan_path):
+    """The two files a brief fetches when it opens: this plan's swap table and
+    the catalogue list for every category it placed. Read off the build, not
+    reconstructed — the browser reads exactly these bytes."""
+    import json
+    from pathlib import Path
+
+    plan = json.loads(Path(plan_path).read_text(encoding="utf-8"))
+    ref = plan.get("swaps_ref")
+    swaps_path = Path("site/data/swaps") / f"{ref}.json" if ref else None
+    if swaps_path is None or not swaps_path.exists():
+        return None
+    candidates = {}
+    for cat in {i["category"] for i in plan["placed"]}:
+        p = Path("site/data/candidates") / f"{cat}.json"
+        if p.exists():
+            for c in json.loads(p.read_text(encoding="utf-8"))["items"]:
+                candidates[c["asin"]] = c
+    return {"swaps": json.loads(swaps_path.read_text(encoding="utf-8")),
+            "candidates": candidates, "swapsMissing": False}
 
 
 def _exported_plans(*names):
@@ -1144,3 +1219,432 @@ def test_the_brief_agrees_with_the_render_about_an_unpublished_colour(run_studio
         else:
             assert item["colour_hex"] in brief
     assert checked, "this plan was chosen because something in it has no colour"
+
+
+# ---- the panel is a record, and does not pretend to be a conversation ------
+#
+# An earlier pass rendered this as a chat: turns addressed by name, the auditor
+# interrupting Adam mid-slot, Adam conceding and coming back with a cheaper
+# piece. Every clause in it was still derived from a field — and it was still
+# wrong, because the exchange never happened. The plan is the output of a
+# deterministic Python planner; dressing its decision record as live dialogue
+# fabricates provenance, which is the one thing this project sells. The
+# genuine multi-agent transcripts exist in docs/demo-run.md and SHOWCASE.md and
+# are linked rather than imitated.
+
+
+def _flat(s: str) -> str:
+    import re
+
+    return re.sub(r"\s+", " ", s)
+
+
+def test_the_panel_calls_itself_a_record_and_not_a_transcript():
+    log = _flat(_function_source(_studio_js(), "agentLogHtml"))
+    assert "Decision record" in log
+    assert "not a transcript" in log
+    assert "nothing below was said by anybody" in log.lower()
+
+
+def test_the_panel_points_at_the_real_multi_agent_run_instead_of_staging_one():
+    """A pointer to a transcript that actually happened is worth more than a
+    synthetic thread, and the two files have to be there to point at."""
+    from pathlib import Path
+
+    log = _function_source(_studio_js(), "agentLogHtml")
+    for doc in ("docs/demo-run.md", "SHOWCASE.md"):
+        assert doc in log, f"the panel never mentions {doc}"
+        assert Path(doc).exists(), f"{doc} is linked but not in the repo"
+
+
+def test_no_agent_is_made_to_address_another(run_studio):
+    """The tell for a staged exchange: one agent speaking to another by name,
+    or reacting to a turn that never occurred. Attribution is legitimate here;
+    dialogue is not."""
+    import html
+    import re
+
+    for path in _exported_plans(
+        "unit01__living_dining__warm-minimal__starter.json",
+        "unit01__living_dining__modern-luxury__premium.json",
+        "unit04__bedroom__boho-scandi__premium.json",
+    ):
+        log = run_studio(path)["log"]
+        text = html.unescape(re.sub(r"<[^>]+>", " ", log))
+        text = re.sub(r"\s+", " ", text)
+        # An agent NAMED mid-sentence is attribution and routing, and both are
+        # real: Zeina genuinely hands the brief to Noura. An agent ADDRESSED —
+        # its name opening a sentence, followed by a comma or colon — is a turn
+        # in a conversation, and no conversation happened.
+        addressed = re.search(
+            r"(?:^|[.!?—] )(Adam|Noura|Zeina|fit-auditor)\s*[,:]", text)
+        assert not addressed, f"{path.name} addresses {addressed.group(1)!r}"
+        for tell in ("Understood", "Fair.", "over to you", "it is yours",
+                     "does it stand", "I have it"):
+            assert tell not in text, f"{path.name} stages an exchange: {tell!r}"
+
+
+# ---- why this one, what it beat, what else there is -----------------------
+#
+# The three questions a shopper actually asks. All three are answered from
+# fields already on disk; none of them is answered by an adjective.
+
+
+def test_the_record_answers_why_each_item_won(run_studio):
+    """`chose_because` and `considered` are the sourcing half, `placed_because`
+    and `positions_tried` the spatial half. A record that printed the product
+    and the price and stopped is a receipt, not a reason."""
+    import json
+
+    for path in _exported_plans(
+        "unit01__living_dining__modern-luxury__premium.json",
+        "unit04__master_bedroom_1__any__starter.json",
+    ):
+        plan = json.loads(path.read_text(encoding="utf-8"))
+        log = run_studio(path)["log"]
+        assert "why this one" in log
+        assert "where it sits" in log
+        assert "up against" in log
+        for item in plan["placed"]:
+            d = item["decision"]
+            assert d["chose_because"] in log or _esc(d["chose_because"]) in log, (
+                f"{item['slot_id']} is in the plan with no reason on screen")
+            assert d["placed_because"] in log or _esc(d["placed_because"]) in log
+
+
+def _esc(s: str) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def test_the_record_names_every_runner_up_and_what_it_cost(run_studio):
+    """`ranked_above` is the answer to "what else did you look at". It was
+    already in the per-item brief and nowhere a reader would find it."""
+    import json
+
+    path, = _exported_plans("unit01__living_dining__modern-luxury__premium.json")
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    log = run_studio(path)["log"]
+    seen = 0
+    for item in plan["placed"]:
+        for runner in item["decision"]["ranked_above"]:
+            assert _esc(runner["title"])[:40] in log, runner["title"]
+            seen += 1
+    assert seen > 3, "this plan was chosen because it has runners-up to show"
+
+
+def test_the_record_does_not_fetch_anything_to_paint():
+    """The swap tables run 48-670 KB apiece and the catalogue lists ~15 KB per
+    category. First paint is 68 KB. The record is built from the plan the page
+    already has, and the two heavy files are behind the button."""
+    js = _studio_js()
+    for builder in ("slotRecordHtml", "adamTurn", "nouraTurn", "zeinaTurn",
+                    "auditorTurn", "agentLogHtml"):
+        src = _function_source(js, builder)
+        for heavy in ("data/swaps", "data/candidates", "fetch(", "await "):
+            assert heavy not in src, f"{builder} reaches for {heavy} to paint"
+    # And the button that does fetch them exists and opens the brief.
+    assert "sr-more" in js and "openBrief(b.dataset.slot)" in js
+
+
+# ---- the comparison is derived from the planner's own ranking key ----------
+
+
+def test_the_scoring_constants_are_the_planners_own():
+    """studio.js mirrors two constants in order to say WHICH term separated two
+    candidates. A drift between the two files would produce a confident and
+    wrong explanation, which is worse than no explanation."""
+    import json
+    import re
+
+    from app.planner import PLAUSIBILITY_FLAGS, UPGRADE_EVIDENCE_FLOOR
+
+    js = _studio_js()
+    floor = re.search(r"const EVIDENCE_FLOOR = (\{.*?\});", js, re.S).group(1)
+    floor = json.loads(re.sub(r"(\w+):", r'"\1":', floor).replace("'", '"'))
+    assert floor == UPGRADE_EVIDENCE_FLOOR
+
+    flags = re.search(r"const PLAUSIBILITY_FLAGS = \[(.*?)\];", js, re.S).group(1)
+    assert set(re.findall(r"'([\w_]+)'", flags)) == set(PLAUSIBILITY_FLAGS)
+
+
+class _P:
+    """The six attributes `app.planner._score` reads, off the exported
+    catalogue rather than off a Product rebuilt here — the browser has the same
+    JSON and nothing else."""
+
+    def __init__(self, c):
+        self.style_tags = c["style"]
+        self.rating = c["rating"]
+        self.reviews = c["reviews"] or 0
+        self.price_sar = c["price_sar"]
+        self.asin = c["asin"]
+        self.flags = c["flags"]
+
+
+def test_the_term_a_runner_up_lost_on_is_the_one_the_planner_used(run_studio):
+    """studio.js says "it lost on style" or "on review evidence" or "on price".
+    Those are the first three terms of `app.planner._score`, in order, so the
+    claim is checkable: re-run the planner's own key over the same two products
+    and the first term that differs must be the one the page named.
+    """
+    import json
+    import re
+
+    from app.planner import _score
+
+    path, = _exported_plans("unit01__living_dining__modern-luxury__premium.json")
+    extras = _extras_for(path)
+    if extras is None:
+        pytest.skip("no swap table exported for this plan")
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    thrown_out = {
+        (i["slot_id"], r["asin"])
+        for i in plan["placed"] for r in i["decision"]["rejected"]
+    }
+    out = run_studio(path, style=["modern", "luxury"],
+                     tier=_tier_ctx("premium"), extras=extras)
+    assert out["separations"], "no runner-up in this plan to check"
+
+    word = {0: "style", 1: "review", 2: "price", 3: "nothing"}
+    checked = 0
+    for sep in out["separations"]:
+        # A candidate the plan records as thrown out never competed on rank;
+        # the page says so and quotes the measurement instead of naming a term.
+        if sep["term"] is None or (sep["slot_id"], sep["runner"]) in thrown_out:
+            continue
+        win = _P(extras["candidates"][sep["winner"]])
+        run = _P(extras["candidates"][sep["runner"]])
+        t = sep["target"]
+        a, b = _score(win, ["modern", "luxury"], t), _score(run, ["modern", "luxury"], t)
+        assert a < b, f"{sep['runner']} is recorded below {sep['winner']} but scores above"
+        first = next((k for k in range(4) if a[k] != b[k]), 3)
+        said = re.match(r"<b>(\w+)", sep["term"]).group(1).lower()
+        assert said == word[first], (
+            f"{sep['slot_id']}: the page says it lost on {said!r}, "
+            f"the planner separated them on term {first}")
+        checked += 1
+    assert checked, "every comparison was skipped"
+
+
+def test_a_candidate_that_outranked_the_winner_is_not_called_beaten(run_studio):
+    """`decision.ranked_above` is the head of the ranked pool, not a list of
+    losers: 322 of the 3,375 entries in this build score ABOVE the piece that
+    is in the plan and were passed over because they were thrown out at the
+    delivery or placement stage. Calling all four "beaten" would be the
+    confident wrong answer this whole file argues against.
+    """
+    import json
+    from pathlib import Path
+
+    from app.planner import _score
+
+    seen = 0
+    for path in sorted(Path("site/data/plans").glob("*.json")):
+        plan = json.loads(path.read_text(encoding="utf-8"))
+        _, _, style, _ = path.stem.split("__")
+        st = [] if style == "any" else style.split("-")
+        for item in plan["placed"]:
+            out = {r["asin"] for r in item["decision"]["rejected"]}
+            for runner in item["decision"]["ranked_above"]:
+                if runner["asin"] in out:
+                    seen += 1
+    assert seen, "no exported plan lists a passed-over candidate"
+
+    # And on one of them, the page prints the removal rather than a rank.
+    path = next(
+        p for p in sorted(Path("site/data/plans").glob("*.json"))
+        if any(r["asin"] in {x["asin"] for x in i["decision"]["rejected"]}
+               for i in json.loads(p.read_text())["placed"]
+               for r in i["decision"]["ranked_above"]))
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    _, _, style, tier = path.stem.split("__")
+    extras = _extras_for(path)
+    if extras is None:
+        pytest.skip("no swap table exported for that plan")
+    full = run_studio(path, style=[] if style == "any" else style.split("-"),
+                      tier=_tier_ctx(tier), extras=extras)["full"]
+    hits = 0
+    for item, brief in zip(plan["placed"], full):
+        out = {r["asin"] for r in item["decision"]["rejected"]}
+        for runner in item["decision"]["ranked_above"]:
+            if runner["asin"] not in out:
+                continue
+            assert "not beaten — removed" in _flat(brief), item["slot_id"]
+            hits += 1
+    assert hits, "the chosen plan had none after all"
+
+
+def test_the_comparison_says_so_rather_than_guessing_when_it_cannot_be_made(
+        run_studio):
+    """Before the catalogue list lands there is nothing to compare on. The row
+    has to say that, not fill the gap with the price it does happen to know."""
+    path, = _exported_plans("unit01__living_dining__modern-luxury__premium.json")
+    brief = run_studio(path)["briefs"][0]
+    assert "loading its attributes" in brief
+    assert "lost on" not in brief and "<b>style.</b>" not in brief
+
+
+# ---- and what else you could have -----------------------------------------
+
+
+def test_the_alternatives_are_the_engines_own_verdicts(run_studio):
+    """"19 other sofas fit here, 2 of them keep the arrangement valid" is only
+    worth printing if those two numbers are the engine's. They are counted off
+    the precomputed swap table, which app/geometry.py produced at build time."""
+    import json
+
+    path, = _exported_plans("unit01__living_dining__modern-luxury__premium.json")
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    extras = _extras_for(path)
+    if extras is None:
+        pytest.skip("no swap table exported for this plan")
+    full = run_studio(path, style=["modern", "luxury"],
+                      tier=_tier_ctx("premium"), extras=extras)["full"]
+
+    table = extras["swaps"]
+    checked = 0
+    for item, brief in zip(plan["placed"], full):
+        prefix = f"{item['slot_id']}|"
+        others = [k for k in table if k.startswith(prefix) and k != prefix + item["asin"]]
+        if not others:
+            continue
+        both = sum(
+            1 for k in others
+            if table[k]["validation"]["status"] == "pass"
+            and (table[k].get("access") or {}).get(k.split("|", 1)[1], {}).get("status")
+            == "pass")
+        flat = _flat(brief)
+        assert f"{len(others)} other listing(s)" in flat, item["slot_id"]
+        assert f"{both} of them keep the arrangement valid" in flat, item["slot_id"]
+        checked += 1
+    assert checked >= 3, "this plan was chosen because it has alternatives to count"
+
+
+def test_the_alternatives_and_the_comparison_print_no_number_from_nowhere(
+        run_studio):
+    """The invariant the whole panel rests on, extended to the two rows that
+    read from a second and third file: a number in `<code>` is a measurement,
+    and every measurement has to be findable in the JSON it was read out of."""
+    import re
+    from pathlib import Path
+
+    path, = _exported_plans("unit01__living_dining__modern-luxury__premium.json")
+    extras = _extras_for(path)
+    if extras is None:
+        pytest.skip("no swap table exported for this plan")
+    ref = __import__("json").loads(path.read_text())["swaps_ref"]
+    raw = path.read_text(encoding="utf-8")
+    raw += (Path("site/data/swaps") / f"{ref}.json").read_text(encoding="utf-8")
+    for p in Path("site/data/candidates").glob("*.json"):
+        raw += p.read_text(encoding="utf-8")
+
+    full = run_studio(path, style=["modern", "luxury"],
+                      tier=_tier_ctx("premium"), extras=extras)["full"]
+    for brief in full:
+        for code in re.findall(r"<code>(.*?)</code>", brief):
+            for number in re.findall(r"\d+(?:\.\d+)?", code):
+                assert number in raw, f"{number!r} was read off nothing"
+
+
+# ---- the brief is deferred, and the number that says so is honest ---------
+#
+# First paint is 68 KB and the project quotes it. The per-item brief is ~10 KB
+# of parser glossary and derivation that nobody sees until they click a
+# product, so it is a lazily-imported module rather than part of the entry.
+
+
+def test_the_brief_is_a_lazy_chunk_and_not_part_of_first_paint():
+    from pathlib import Path
+
+    studio = Path("app/static/studio.js").read_text(encoding="utf-8")
+    assert "import('./brief.js')" in studio, "the brief is no longer deferred"
+    assert "from './brief.js'" not in studio, (
+        "a static import puts the whole brief back into the entry chunk")
+    # And the split only holds while the cycle stays broken: if brief.js
+    # imported studio.js back, esbuild would hoist the entry's code into a
+    # shared chunk and the deferral would buy nothing.
+    brief = Path("app/static/brief.js").read_text(encoding="utf-8")
+    assert "./studio.js" not in brief, "brief.js must not import the entry back"
+    assert "./text.js" in brief, "it should share the text primitives, not copy them"
+
+
+def test_the_shared_helpers_exist_once_in_the_build():
+    """Two copies of `measure` is two ways for a number to stop being a
+    measurement. text.js is the only place these are defined."""
+    from pathlib import Path
+
+    text = Path("app/static/text.js").read_text(encoding="utf-8")
+    for helper in ("export const esc", "export const measure",
+                   "export function money", "export function humaniseWithin",
+                   "export function priceGap", "export function swatch"):
+        assert helper in text, f"text.js does not define {helper}"
+    for other in ("studio.js", "brief.js"):
+        src = Path(f"app/static/{other}").read_text(encoding="utf-8")
+        assert "from './text.js'" in src, f"{other} does not use the shared helpers"
+        for dup in ("const esc = (s) =>", "const measure = (text) =>",
+                    "function money(n)"):
+            assert dup not in src, f"{other} carries its own copy of {dup!r}"
+
+
+def test_first_paint_counts_every_chunk_the_entry_blocks_on():
+    """`--splitting` emits two kinds of chunk and only one of them is free.
+
+    A chunk behind `import()` costs nothing until asked for; a chunk the entry
+    imports statically blocks exactly as if it were inline. Counting only
+    studio.js would let any future split look like a saving by moving bytes
+    into a chunk the browser still waits for.
+    """
+    import re
+    from pathlib import Path
+
+    from tools.export_static import eager_chunks
+
+    entry = Path("site/studio.js")
+    if not entry.exists():
+        pytest.skip("no static build in site/ — run `make site`")
+    src = entry.read_text(encoding="utf-8")
+    named = set(re.findall(r'from\s*"\./(chunk-[^"]+\.js)"', src))
+    assert named, "the entry imports no chunk — has --splitting been dropped?"
+    assert {c.name for c in eager_chunks()} >= named
+    # The three.js chunk is half a megabyte and must never be one of them.
+    for chunk in eager_chunks():
+        assert chunk.stat().st_size < 100_000, (
+            f"{chunk.name} is {chunk.stat().st_size} bytes and blocks first paint")
+
+
+def test_the_studio_keeps_its_share_of_first_paint():
+    """First paint is html + entry + every chunk the entry blocks on + css +
+    the index + one plan, and the project quotes 68 KB for the lot.
+
+    Two of those parts belong to other work: index.html is the page shell and
+    the plan payload is the planner's output, and neither moves for anything
+    done in this file. What the studio owns is its own JavaScript and its own
+    stylesheet, so that is what is held to a number here — a budget that cannot
+    be met by waiting for somebody else's file to shrink, and cannot be dodged
+    by moving bytes into a chunk the browser still blocks on.
+
+    The ceiling is what those two cost before the per-item brief was split into
+    a lazy chunk. Everything added since — the decision record, the slot-by-slot
+    findings, the ranking derivation — came in under it.
+    """
+    from pathlib import Path
+
+    from tools.export_static import eager_chunks
+
+    entry, css = Path("site/studio.js"), Path("site/studio.css")
+    if not (entry.exists() and css.exists()):
+        pytest.skip("no static build in site/ — run `make site`")
+
+    blocking = (entry.stat().st_size
+                + sum(c.stat().st_size for c in eager_chunks())
+                + css.stat().st_size)
+    # 36,148 B of JS (35,993 entry + a 155 B shared chunk that the old figure
+    # never counted) and 14,237 B of CSS, measured off the build immediately
+    # before this work.
+    ceiling = 36_148 + 14_237
+    assert blocking <= ceiling, (
+        f"studio.js + its blocking chunks + studio.css are {blocking} bytes "
+        f"against a {ceiling} byte budget. three.js and the per-item brief are "
+        "already deferred; whatever was just added has to be deferred too, or "
+        "the 68 KB the project quotes has to change everywhere it appears.")

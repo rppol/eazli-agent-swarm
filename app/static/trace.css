@@ -163,7 +163,10 @@ h2 {
 .wf-head .r { text-align: right; }
 
 #rows { position: relative; }
-#edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+/* Above the rows, not behind them. The rows carry a background and their own
+   stacking context, so an overlay at the default z-index is invisible — which
+   is exactly the arrow the page exists to draw. */
+#edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; z-index: 3; }
 
 .row {
   height: 38px; border-bottom: 1px solid var(--line);
@@ -208,9 +211,13 @@ h2 {
 
 /* ---------- span detail ---------- */
 
+/* Above the A2A overlay. The connector is drawn bar-to-bar, so an open panel
+   between two bars would otherwise be scribbled through by a metre of dashed
+   line; the handoff is restated inside the panel anyway. */
 .detail {
   border-bottom: 1px solid var(--line); background: #fbfbff;
   padding: 14px 16px 18px 34px; font-size: 13px;
+  position: relative; z-index: 4;
 }
 .detail h3 {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em;
@@ -290,7 +297,11 @@ ul.vlist > li { margin: 1px 0; }
 /* ---------- not yet run ---------- */
 
 .unrun-note { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
-.row.unrun .nm, .row.unrun .rl { color: var(--muted); }
+.row.unrun .nm { color: var(--muted); flex: none; }
+.row.unrun .rl { color: var(--muted); }
+/* No bar. An agent that did not run has no duration to plot, and a hatched
+   block the width of the track reads as "ran the whole time" at a glance. */
+.no-bar { font-size: 11px; color: var(--muted); font-style: italic; }
 .row.unrun .dot { background: var(--line); }
 
 /* ---------- related ---------- */

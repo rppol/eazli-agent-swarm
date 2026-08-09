@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -57,6 +58,7 @@ from app.planner import (
 
 SRC = Path("app/static")
 OUT = Path("site")
+RUNS = Path("docs/agent-runs")
 STYLES = [
     ["warm", "minimal"],
     ["modern", "luxury"],
@@ -277,6 +279,75 @@ def bundle_js() -> str:
     return result.stderr.strip().splitlines()[-1] if result.stderr else ""
 
 
+def eager_chunks() -> set[Path]:
+    """The chunks the browser must have before studio.js can run.
+
+    `--splitting` emits two kinds of chunk and the number that matters treats
+    them completely differently. `import('./viewer.js')` and
+    `import('./brief.js')` produce chunks nothing fetches until the user asks —
+    those are free. Code shared between the entry and a lazy chunk (palette.js,
+    text.js) is hoisted into a chunk the ENTRY imports statically, and the
+    browser blocks on it exactly as if it were still inline.
+
+    Counting only studio.js therefore understates first paint by however much
+    got hoisted, and understates it MORE every time something is split out —
+    which would turn the one number this build reports into a way of making
+    deferral look better than it is. Read off the entry's own import
+    statements, followed transitively, so the figure cannot be gamed by moving
+    code around.
+    """
+    found: set[Path] = set()
+    queue = [OUT / "studio.js"]
+    while queue:
+        src = queue.pop()
+        for name in re.findall(r'from\s*"\./(chunk-[^"]+\.js)"',
+                               src.read_text(encoding="utf-8")):
+            chunk = OUT / name
+            if chunk.exists() and chunk not in found:
+                found.add(chunk)
+                queue.append(chunk)
+    return found
+
+
+def publish_trace() -> int:
+    """Publish /trace: the agent-trace viewer and the run files it reads.
+
+    The viewer is a separate page. It is deliberately *not* part of the studio
+    bundle — no import, no shared stylesheet — so none of it is charged to the
+    first-paint number printed below.
+
+    The index is globbed, not listed. Dropping another `eazli.agent-trace/v1`
+    file into docs/agent-runs/ publishes it and puts it in the page's picker
+    with no edit here and none in trace.js; only the four keys the picker
+    labels an option with are read, so a schema that grows still exports.
+    """
+    dest = OUT / "data" / "agent-runs"
+    dest.mkdir(parents=True, exist_ok=True)
+    runs = []
+    for path in sorted(RUNS.glob("*.json")):
+        if path.name == "index.json":
+            continue
+        run = json.loads(path.read_text(encoding="utf-8"))
+        shutil.copy(path, dest / path.name)
+        runs.append({
+            "file": path.name,
+            "run_id": run.get("run_id"),
+            "recorded": run.get("recorded"),
+            "provenance_kind": run.get("provenance_kind", "recorded"),
+        })
+    _write(dest / "index.json", {"runs": runs})
+
+    html = (SRC / "trace.html").read_text(encoding="utf-8")
+    for a, b in (('href="/static/trace.css"', 'href="./trace.css"'),
+                 ('src="/static/trace.js"', 'src="./trace.js"'),
+                 ('href="/static/index.html"', 'href="./index.html"')):
+        html = html.replace(a, b)
+    (OUT / "trace.html").write_text(html, encoding="utf-8")
+    shutil.copy(SRC / "trace.css", OUT / "trace.css")
+    shutil.copy(SRC / "trace.js", OUT / "trace.js")
+    return len(runs)
+
+
 def main() -> None:
     if OUT.exists():
         shutil.rmtree(OUT)
@@ -296,18 +367,22 @@ def main() -> None:
     html = html.replace('<script type="module" src="/static/studio.js"></script>',
                         '<script type="module" src="./studio.js"></script>')
     html = html.replace('<html lang="en">', '<html lang="en" data-mode="static">')
+    html = html.replace('href="/static/trace.html"', 'href="./trace.html"')
     html = html.replace(
         '<span class="sub">plan a room, swap anything, every verdict from the Python engine</span>',
         '<span class="sub">static build — every verdict precomputed by app/geometry.py, '
         'not recalculated in the browser</span>')
     (OUT / "index.html").write_text(html, encoding="utf-8")
     (OUT / ".nojekyll").write_text("", encoding="utf-8")
+    n_runs = publish_trace()
 
-    app_kb = (OUT / "studio.js").stat().st_size / 1024
+    eager = eager_chunks()
+    app_bytes = (OUT / "studio.js").stat().st_size + sum(c.stat().st_size for c in eager)
+    app_kb = app_bytes / 1024
     total = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file()) / 1024
     first_paint = (
         (OUT / "index.html").stat().st_size
-        + (OUT / "studio.js").stat().st_size
+        + app_bytes
         + (OUT / "studio.css").stat().st_size
         + (OUT / "data" / "index.json").stat().st_size
         + (OUT / "data" / "plans"
@@ -320,11 +395,17 @@ def main() -> None:
     print(f"swaps        {stats['swaps']:>5}   {stats['swap_kb']:>8.0f} KB  "
           f"in {stats['swap_files']} content-addressed files "
           f"for {stats['plans']} contexts, fetched on demand")
-    chunks = sorted(OUT.glob("chunk-*.js"))
     print(f"studio.js (entry)      {app_kb:>8.0f} KB  {esbuild_note}")
-    for c in chunks:
-        print(f"  {c.name:<20} {c.stat().st_size / 1024:>8.0f} KB  lazy: three.js + viewer")
+    for c in sorted(OUT.glob("chunk-*.js")):
+        how = ("blocking: imported by the entry" if c in eager
+               else "lazy: fetched on demand")
+        print(f"  {c.name:<20} {c.stat().st_size / 1024:>8.0f} KB  {how}")
+    trace_kb = sum(
+        (OUT / n).stat().st_size for n in ("trace.html", "trace.js", "trace.css")
+    ) / 1024
     print(f"site total             {total:>8.0f} KB")
+    print(f"/trace                 {trace_kb:>8.0f} KB  {n_runs} run file(s), separate page, "
+          f"not in the studio's first paint")
     print(f"FIRST PAINT            {first_paint:>8.0f} KB  (html + js + css + index + one plan)")
 
 

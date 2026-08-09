@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eazli agent trace — orchestration, A2A handoffs, ReAct</title>
+<link rel="stylesheet" href="/static/trace.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <strong>eazli agent trace</strong>
+    <span class="sub">recorded agent runs — waterfall, MCP tool calls, ReAct steps, A2A handoffs</span>
+    <span class="disclaimer"><b>An unaffiliated prototype.</b> Built by a job
+      applicant as a work sample. eazli did not build, commission, review or
+      endorse it. The agent names below are eazli's.</span>
+  </div>
+  <div class="headtools">
+    <label for="run">recorded run
+      <select id="run"></select>
+    </label>
+    <a class="studiolink" href="/static/index.html">&larr; back to the studio</a>
+  </div>
+</header>
+
+<main>
+  <!-- Everything below is drawn by trace.js from the run file. There is no
+       markup here that names an agent, a span or a number, because a second
+       run file has to render through the same code with no edit. -->
+  <div id="app"></div>
+
+  <section>
+    <h2>The rest of the evidence</h2>
+    <div class="related">
+      <a class="r-item" href="https://github.com/rppol/eazli-agent-swarm/blob/main/docs/demo-run.md">
+        <b>docs/demo-run.md — a full swarm run</b>
+        <span>Zeina &rarr; Noura &rarr; Adam &rarr; judge, end to end, with the judge's scores.
+          Longer than a trace and written as prose; this page is the same kind of run, instrumented.</span>
+      </a>
+      <a class="r-item" href="https://github.com/rppol/eazli-agent-swarm/blob/main/SHOWCASE.md#the-debate-should-a-bigger-budget-buy-a-better-room">
+        <b>SHOWCASE.md — the debate</b>
+        <span>A real adversarial exchange: the sourcing agent contradicted the auditor,
+          and was right. Two agents with opposing incentives, each answering the other's
+          strongest point.</span>
+      </a>
+      <a class="r-item" href="https://github.com/rppol/eazli-agent-swarm/tree/main/docs/agent-runs">
+        <b>docs/agent-runs/ — the raw files</b>
+        <span>The JSON this page reads, in the <code>eazli.agent-trace/v1</code> shape.
+          Drop another file in that folder and it appears in the picker above.</span>
+      </a>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="/static/trace.js"></script>
+</body>
+</html>
